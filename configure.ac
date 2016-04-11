@@ -2,7 +2,7 @@ AC_INIT([libosmocore],
 	m4_esyscmd([./git-version-gen .tarball-version]),
 	[openbsc@lists.osmocom.org])
 
-AM_INIT_AUTOMAKE([foreign dist-bzip2 no-dist-gzip 1.6])
+AM_INIT_AUTOMAKE([foreign dist-bzip2 no-dist-gzip 1.6 subdir-objects])
 AC_CONFIG_TESTDIR(tests)
 
 dnl kernel style compile messages
@@ -13,7 +13,7 @@ AC_PROG_MAKE_SET
 AC_PROG_MKDIR_P
 AC_PROG_CC
 AC_PROG_INSTALL
-LT_INIT([pic-only])
+LT_INIT([pic-only disable-static])
 
 AC_CONFIG_MACRO_DIR([m4])
 
