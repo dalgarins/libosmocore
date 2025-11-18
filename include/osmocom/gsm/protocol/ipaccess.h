@@ -1,3 +1,5 @@
+/*! \file ipaccess.h */
+
 #pragma once
 
 #include <stdint.h>
@@ -36,29 +38,41 @@ enum ipaccess_proto_ext {
 	IPAC_PROTO_EXT_ORC	= 0x04,		/* OML Router Control */
 	IPAC_PROTO_EXT_GSUP	= 0x05,		/* GSUP GPRS extension */
 	IPAC_PROTO_EXT_OAP	= 0x06,		/* Osmocom Authn Protocol */
+	IPAC_PROTO_EXT_RSPRO	= 0x07,		/* Remote SIM protocol */
+	IPAC_PROTO_EXT_PCU	= 0x08,		/* BSC<->BTS<->PCU communication */
+	IPAC_PROTO_EXT_TCAP_ROUTING	= 0x09,		/* TCAP Routing Protocol */
 };
 
 enum ipaccess_msgtype {
-	IPAC_MSGT_PING		= 0x00,
-	IPAC_MSGT_PONG		= 0x01,
-	IPAC_MSGT_ID_GET	= 0x04,
-	IPAC_MSGT_ID_RESP	= 0x05,
-	IPAC_MSGT_ID_ACK	= 0x06,
+	IPAC_MSGT_PING		= 0x00,		/* Heartbeet */
+	IPAC_MSGT_PONG		= 0x01,		/* Heartbeat Ack */
+	IPAC_MSGT_ID_GET	= 0x04,		/* Identity Request */
+	IPAC_MSGT_ID_RESP	= 0x05,		/* Identity */
+	IPAC_MSGT_ID_ACK	= 0x06,		/* Identity Ack */
+	IPAC_MSGT_ID_NACK	= 0x07,		/* Identity Nack */
+	IPAC_MSGT_PROXY		= 0x08,		/* Proxy */
+	IPAC_MSGT_PROXY_ACK	= 0x09,		/* Proxy Ack */
+	IPAC_MSGT_PROXY_NACK	= 0x0a,		/* Proxy Nack */
+	IPAC_MSGT_SSL_INFO	= 0x0b,		/* SSL Info */
 
 	/* OpenBSC extension */
 	IPAC_MSGT_SCCP_OLD	= 0xff,
 };
 
 enum ipaccess_id_tags {
-	IPAC_IDTAG_SERNR		= 0x00,
-	IPAC_IDTAG_UNITNAME		= 0x01,
-	IPAC_IDTAG_LOCATION1		= 0x02,
-	IPAC_IDTAG_LOCATION2		= 0x03,
-	IPAC_IDTAG_EQUIPVERS		= 0x04,
-	IPAC_IDTAG_SWVERSION		= 0x05,
-	IPAC_IDTAG_IPADDR		= 0x06,
-	IPAC_IDTAG_MACADDR		= 0x07,
-	IPAC_IDTAG_UNIT			= 0x08,
+	IPAC_IDTAG_SERNR		= 0x00,	/* Unit Serial Number */
+	IPAC_IDTAG_UNITNAME		= 0x01,	/* Unit Name */
+	IPAC_IDTAG_LOCATION1		= 0x02,	/* Unit Location */
+	IPAC_IDTAG_LOCATION2		= 0x03,	/* Unit Type */
+	IPAC_IDTAG_EQUIPVERS		= 0x04,	/* Hardware Version */
+	IPAC_IDTAG_SWVERSION		= 0x05,	/* Software Version */
+	IPAC_IDTAG_IPADDR		= 0x06,	/* IP Address */
+	IPAC_IDTAG_MACADDR		= 0x07,	/* Ethernet Address */
+	IPAC_IDTAG_UNIT			= 0x08,	/* Unit ID */
+	IPAC_IDTAG_USERNAME		= 0x09,	/* User Name */
+	IPAC_IDTAG_PASSWORD		= 0x0a,	/* Password */
+	IPAC_IDTAG_ACCESS_CLASS		= 0x0b, /* Access Class */
+	IPAC_IDTG_APP_PROTO_VER		= 0x0c, /* Application Protocol Version */
 };
 
 /*

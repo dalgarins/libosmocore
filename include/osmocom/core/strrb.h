@@ -1,6 +1,7 @@
-#pragma once
-
-/* (C) 2012-2013 by Katerina Barone-Adesi <kat.obsc@gmail.com>
+/*! \file strrb.h
+ * Osmocom string ringbuffer handling routines. */
+/*
+ * (C) 2012-2013 by Katerina Barone-Adesi <kat.obsc@gmail.com>
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -13,37 +14,29 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
+
+#pragma once
 
 /*! \defgroup osmo_strrb Osmocom ringbuffers for log strings
  *  @{
- */
-
-/*! \file strrb.h
- *  \brief Osmocom string ringbuffer handling routines
- */
+ * \file strrb.h */
 
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <osmocom/core/talloc.h>
-
-/*! \brief A structure representing an osmocom string ringbuffer */
+/*! A structure representing an osmocom string ringbuffer */
 
 #define RB_MAX_MESSAGE_SIZE 240
 struct osmo_strrb {
-	uint16_t start;		/*!< \brief index of the first slot */
-	uint16_t end;		/*!< \brief index of the last slot */
-	uint16_t size;		/*!< \brief max number of messages to store */
-	char **buffer;		/*!< \brief storage for messages */
+	uint16_t start;		/*!< index of the first slot */
+	uint16_t end;		/*!< index of the last slot */
+	uint16_t size;		/*!< max number of messages to store */
+	char **buffer;		/*!< storage for messages */
 };
 
-struct osmo_strrb *osmo_strrb_create(TALLOC_CTX * ctx, size_t rb_size);
+struct osmo_strrb *osmo_strrb_create(void *talloc_ctx, size_t rb_size);
 bool osmo_strrb_is_empty(const struct osmo_strrb *rb);
 const char *osmo_strrb_get_nth(const struct osmo_strrb *rb,
 			       unsigned int string_index);

@@ -1,11 +1,7 @@
-#pragma once
-
-#include <osmocom/core/msgb.h>
-#include <osmocom/gprs/gprs_bssgp.h>
-
-/* GPRS BSSGP protocol implementation as per 3GPP TS 08.18 */
-
-/* (C) 2009-2012 by Harald Welte <laforge@gnumonks.org>
+/*! \file gprs_bssgp_bss.h
+ * GPRS BSSGP protocol implementation as per 3GPP TS 08.18 */
+/*
+ * (C) 2009-2012 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
  *
@@ -24,9 +20,14 @@
  *
  */
 
+#pragma once
+
+#include <osmocom/core/msgb.h>
+#include <osmocom/gprs/gprs_bssgp.h>
 
 uint8_t *bssgp_msgb_tlli_put(struct msgb *msg, uint32_t tlli);
-
+uint8_t *bssgp_msgb_ra_put(struct msgb *msg, const struct gprs_ra_id *ra_id);
+int bssgp_tx_bvc_ptp_reset(uint16_t nsei, enum gprs_bssgp_cause cause);
 int bssgp_tx_suspend(uint16_t nsei, uint32_t tlli,
 		     const struct gprs_ra_id *ra_id);
 
@@ -56,6 +57,7 @@ int bssgp_tx_bvc_block(struct bssgp_bvc_ctx *bctx, uint8_t cause);
 int bssgp_tx_bvc_unblock(struct bssgp_bvc_ctx *bctx);
 
 int bssgp_tx_bvc_reset(struct bssgp_bvc_ctx *bctx, uint16_t bvci, uint8_t cause);
+int bssgp_tx_bvc_reset2(struct bssgp_bvc_ctx *bctx, uint16_t bvci, uint8_t cause, bool add_cell_id);
 
 int bssgp_tx_ul_ud(struct bssgp_bvc_ctx *bctx, uint32_t tlli,
 		   const uint8_t *qos_profile, struct msgb *llc_pdu);

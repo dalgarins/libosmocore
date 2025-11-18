@@ -1,6 +1,4 @@
 /*
- * a5.h
- *
  * Copyright (C) 2011  Sylvain Munaut <tnt@246tNt.com>
  *
  * All Rights Reserved
@@ -14,27 +12,20 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #pragma once
 
 #include <stdint.h>
 
+#include <osmocom/core/defs.h>
 #include <osmocom/core/bits.h>
 
 /*! \defgroup a5 GSM A5 ciphering algorithm
  *  @{
- */
+ * \file a5.h */
 
-/*! \file gsm/a5.h
- *  \brief Osmocom GSM A5 ciphering algorithm header
- */
-
-/*! \brief Converts a frame number into the 22 bit number used in A5/x
+/*! Converts a frame number into the 22 bit number used in A5/x
  *  \param[in] fn The true framenumber
  *  \return 22 bit word
  */
@@ -54,7 +45,7 @@ osmo_a5_fn_count(uint32_t fn)
 	 *    (converted internally to fn_count)
 	 */
 int osmo_a5(int n, const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul);
-void osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul);
-void osmo_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul);
+void osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul) OSMO_DEPRECATED("Use generic osmo_a5() instead");
+void osmo_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul) OSMO_DEPRECATED("Use generic osmo_a5() instead");
 
 /*! @} */

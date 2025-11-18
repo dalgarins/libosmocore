@@ -48,7 +48,9 @@ static inline bool print_a5(int n, int k, const char * dir, const ubit_t * out, 
 	osmo_hexparse(block, res, len);
 	osmo_ubit2pbit(buf, out, 114);
 	if (0 != memcmp(buf, res, len)) {
-		printf("FAIL\nGOT: [%d] %s\nEXP: [%d] %s\n", k, osmo_hexdump_nospc(buf, len), k, osmo_hexdump_nospc(res, len));
+		printf("FAIL:\n");
+		printf("GOT: [%d] %s\n", k, osmo_hexdump_nospc(buf, len));
+		printf("EXP: [%d] %s\n", k, osmo_hexdump_nospc(res, len));
 		return false;
 	}
 	printf("OK\n");
@@ -64,7 +66,7 @@ static inline bool test_a53(const char * kc, uint32_t count, const char * block1
 	_a5_3(key, count, dlout, NULL, false);
 	_a5_3(key, count, NULL, ulout, false);
 
-	return print_a5(3, 8, "DL", dlout, block1) & print_a5(3, 8, "UL", ulout, block2);
+	return print_a5(3, 8, "DL", dlout, block1) && print_a5(3, 8, "UL", ulout, block2);
 }
 
 static inline bool test_a54(const char * kc, uint32_t count, const char * block1, const char * block2)
@@ -76,7 +78,7 @@ static inline bool test_a54(const char * kc, uint32_t count, const char * block1
 	_a5_4(key, count, dlout, NULL, false);
 	_a5_4(key, count, NULL, ulout, false);
 
-	return print_a5(4, 8, "DL", dlout, block1) & print_a5(4, 8, "UL", ulout, block2);
+	return print_a5(4, 8, "DL", dlout, block1) && print_a5(4, 8, "UL", ulout, block2);
 }
 
 

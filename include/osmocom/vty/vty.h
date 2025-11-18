@@ -2,11 +2,15 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <time.h>
+
+#include <osmocom/core/linuxlist.h>
+#include <osmocom/core/defs.h>
 
 /*! \defgroup vty VTY (Virtual TTY) interface
  *  @{
- */
-/*! \file vty.h */
+ * \file vty.h */
 
 /* GCC have printf type attribute check.  */
 #ifdef __GNUC__
@@ -25,7 +29,13 @@
 #define VTY_BUFSIZ 512
 #define VTY_MAXHIST 20
 
-/*! \brief VTY events */
+/* Number of application / library specific VTY attributes */
+#define VTY_CMD_USR_ATTR_NUM 32
+/* Flag characters reserved for global VTY attributes */
+#define VTY_CMD_ATTR_FLAGS_RESERVED \
+	{ '.', '!', '@', '^' }
+
+/*! VTY events */
 enum event {
 	VTY_SERV,
 	VTY_READ,
@@ -48,93 +58,103 @@ enum vty_type {
 
 /*! Internal representation of a single VTY */
 struct vty {
-	/*! \brief underlying file (if any) */
+	/*! underlying file (if any) */
 	FILE *file;
 
-	/*! \brief private data, specified by creator */
+	/*! private data, specified by creator */
 	void *priv;
 
-	/*! \brief File descripter of this vty. */
+	/*! File descripter of this vty. */
 	int fd;
 
-	/*! \brief Is this vty connect to file or not */
+	/*! Is this vty connect to file or not */
 	enum vty_type type;
 
-	/*! \brief Node status of this vty */
+	/*! Node status of this vty */
 	int node;
 
-	/*! \brief Failure count */
+	/*! Failure count */
 	int fail;
 
-	/*! \brief Output buffer. */
+	/*! Output buffer. */
 	struct buffer *obuf;
 
-	/*! \brief Command input buffer */
+	/*! Command input buffer */
 	char *buf;
 
-	/*! \brief Command cursor point */
+	/*! Command cursor point */
 	int cp;
 
-	/*! \brief Command length */
+	/*! Command length */
 	int length;
 
-	/*! \brief Command max length. */
+	/*! Command max length. */
 	int max;
 
-	/*! \brief Histry of command */
+	/*! Histry of command */
 	char *hist[VTY_MAXHIST];
 
-	/*! \brief History lookup current point */
+	/*! History lookup current point */
 	int hp;
 
-	/*! \brief History insert end point */
+	/*! History insert end point */
 	int hindex;
 
-	/*! \brief For current referencing point of interface, route-map,
+	/*! For current referencing point of interface, route-map,
 	   access-list etc... */
 	void *index;
 
-	/*! \brief For multiple level index treatment such as key chain and key. */
+	/*! For multiple level index treatment such as key chain and key. */
 	void *index_sub;
 
-	/*! \brief For escape character. */
+	/*! For escape character. */
 	unsigned char escape;
 
-	/*! \brief Current vty status. */
+	/*! Current vty status. */
 	enum { VTY_NORMAL, VTY_CLOSE, VTY_MORE, VTY_MORELINE } status;
 
-	/*! \brief IAC handling
+	/*! IAC handling
 	 *
 	 * IAC handling: was the last character received the IAC
 	 * (interpret-as-command) escape character (and therefore the next
 	 * character will be the command code)?  Refer to Telnet RFC 854. */
 	unsigned char iac;
 
-	/*! \brief IAC SB (option subnegotiation) handling */
+	/*! IAC SB (option subnegotiation) handling */
 	unsigned char iac_sb_in_progress;
 	/* At the moment, we care only about the NAWS (window size) negotiation,
 	 * and that requires just a 5-character buffer (RFC 1073):
 	 * <NAWS char> <16-bit width> <16-bit height> */
 #define TELNET_NAWS_SB_LEN 5
-	/*! \brief sub-negotiation buffer */
+	/*! sub-negotiation buffer */
 	unsigned char sb_buf[TELNET_NAWS_SB_LEN];
-	/*! \brief How many subnegotiation characters have we received?  
+	/*! How many subnegotiation characters have we received?
 	 *
 	 * We just drop those that do not fit in the buffer. */
 	size_t sb_len;
 
-	/*! \brief Window width */
+	/*! Window width */
 	int width;
-	/*! \brief Widnow height */
+	/*! Widnow height */
 	int height;
 
-	/*! \brief Configure lines. */
+	/*! Configure lines. */
 	int lines;
 
 	int monitor;
 
-	/*! \brief In configure mode. */
+	/*! In configure mode. */
 	int config;
+
+	/*! List of parent nodes, last item is the outermost parent. */
+	struct llist_head parent_nodes;
+
+	/*! When reading from a config file, these are the indenting characters expected for children of
+	 * the current VTY node. */
+	char *indent;
+
+	/*! Whether the expert mode is enabled. */
+	bool expert_mode;
 };
 
 /* Small macro to determine newline is newline only or linefeed needed. */
@@ -147,34 +167,50 @@ static inline const char *vty_newline(struct vty *vty)
 
 /*! Information an application registers with the VTY */
 struct vty_app_info {
-	/*! \brief name of the application */
+	/*! name of the application */
 	const char *name;
-	/*! \brief version string of the application */
+	/*! version string of the application */
 	const char *version;
-	/*! \brief copyright string of the application */
+	/*! copyright string of the application */
 	const char *copyright;
-	/*! \brief \ref talloc context */
+	/*! \ref talloc context */
 	void *tall_ctx;
-	/*! \brief call-back for returning to parent n ode */
+	/*! Call-back for taking actions upon exiting a node.
+	 * The return value is ignored, and changes to vty->node and vty->index made in this callback are ignored.
+	 * Implicit parent node tracking always sets the correct parent node and vty->index after this callback exits,
+	 * so this callback can handle only those nodes that should take specific actions upon node exit, or can be left
+	 * NULL entirely. */
 	int (*go_parent_cb)(struct vty *vty);
-	/*! \brief call-back to determine if node is config node */
-	int (*is_config_node)(struct vty *vty, int node);
-	/*! \brief Check if the config is consistent before write */
+	/*! OBSOLETED: Implicit parent node tracking has replaced the use of this callback. This callback is no longer
+	 * called, ever, and can be left NULL. */
+	int (*is_config_node)(struct vty *vty, int node)
+		OSMO_DEPRECATED("Implicit parent node tracking has replaced the use of this callback. This callback is"
+				" no longer called, ever, and can be left NULL.");
+	/*! Check if the config is consistent before write */
 	int (*config_is_consistent)(struct vty *vty);
+	/*! Description of the application specific VTY attributes (optional). */
+	const char * usr_attr_desc[VTY_CMD_USR_ATTR_NUM];
+	/*! Flag letters of the application specific VTY attributes (optional). */
+	char usr_attr_letters[VTY_CMD_USR_ATTR_NUM];
 };
 
 /* Prototypes. */
 void vty_init(struct vty_app_info *app_info);
 int vty_read_config_file(const char *file_name, void *priv);
+int vty_read_config_filep(FILE *confp, void *priv);
 void vty_init_vtysh (void);
 void vty_reset (void);
 struct vty *vty_new (void);
 struct vty *vty_create (int vty_sock, void *priv);
+bool vty_is_active(struct vty *vty);
 int vty_out (struct vty *, const char *, ...) VTY_PRINTF_ATTRIBUTE(2, 3);
+int vty_out_va(struct vty *vty, const char *format, va_list ap);
 int vty_out_newline(struct vty *);
+int vty_out_uptime(struct vty *vty, const struct timespec *starttime);
 int vty_read(struct vty *vty);
 //void vty_time_print (struct vty *, int);
 void vty_close (struct vty *);
+void vty_flush(struct vty *vty);
 char *vty_get_cwd (void);
 void vty_log (const char *level, const char *proto, const char *fmt, va_list);
 int vty_config_lock (struct vty *);
@@ -185,6 +221,11 @@ void vty_hello (struct vty *);
 void *vty_current_index(struct vty *);
 int vty_current_node(struct vty *vty);
 int vty_go_parent(struct vty *vty);
+
+/* Return IP address passed to the 'line vty'/'bind' command, or "127.0.0.1" */
+const char *vty_get_bind_addr(void);
+/** Returns configured port passed to the 'line vty'/'bind' command or default_port. */
+int vty_get_bind_port(int default_port);
 
 extern void *tall_vty_ctx;
 

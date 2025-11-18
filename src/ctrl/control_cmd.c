@@ -1,9 +1,14 @@
-/* SNMP-like status interface
- *
+/*! \file control_cmd.c
+ * SNMP-like status interface. */
+/*
  * (C) 2010-2011 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2010-2011 by On-Waves
+ * (C) 2014 by Harald Welte <laforge@gnumonks.org>
+ * (C) 2017 by sysmocom - s.f.m.c. GmbH
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,10 +19,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -30,44 +31,26 @@
 #include <unistd.h>
 
 #include <osmocom/ctrl/control_cmd.h>
+#include <osmocom/ctrl/control_if.h>
 
 #include <osmocom/core/msgb.h>
 #include <osmocom/core/talloc.h>
-
+#include <osmocom/core/utils.h>
 #include <osmocom/vty/command.h>
 #include <osmocom/vty/vector.h>
 
 extern vector ctrl_node_vec;
 
-static struct ctrl_cmd_map ccm[] = {
-	{"GET", CTRL_TYPE_GET},
-	{"SET", CTRL_TYPE_SET},
-	{"GET_REPLY", CTRL_TYPE_GET_REPLY},
-	{"SET_REPLY", CTRL_TYPE_SET_REPLY},
-	{"TRAP", CTRL_TYPE_TRAP},
-	{"ERROR", CTRL_TYPE_ERROR},
-	{NULL}
+const struct value_string ctrl_type_vals[] = {
+	{ CTRL_TYPE_UNKNOWN,	"(unknown)" },
+	{ CTRL_TYPE_GET,	"GET" },
+	{ CTRL_TYPE_SET,	"SET" },
+	{ CTRL_TYPE_GET_REPLY,	"GET_REPLY" },
+	{ CTRL_TYPE_SET_REPLY,	"SET_REPLY" },
+	{ CTRL_TYPE_TRAP,	"TRAP" },
+	{ CTRL_TYPE_ERROR,	"ERROR" },
+	{ 0, NULL }
 };
-
-static int ctrl_cmd_str2type(char *s)
-{
-	int i;
-	for (i=0; ccm[i].cmd != NULL; i++) {
-		if (strcasecmp(s, ccm[i].cmd) == 0)
-			return ccm[i].type;
-	}
-	return CTRL_TYPE_UNKNOWN;
-}
-
-static char *ctrl_cmd_type2str(int type)
-{
-	int i;
-	for (i=0; ccm[i].cmd != NULL; i++) {
-		if (ccm[i].type == type)
-			return ccm[i].cmd;
-	}
-	return NULL;
-}
 
 /* Functions from libosmocom */
 extern vector cmd_make_descvec(const char *string, const char *descstr);
@@ -103,6 +86,12 @@ static struct ctrl_cmd_element *ctrl_cmd_get_element_match(vector vline, vector 
 	return NULL;
 }
 
+/*! Execute a given received command
+ *  \param[in] vline vector representing the available/registered commands
+ *  \param[inout] command parsed received command to be executed
+ *  \param[in] node CTRL interface node
+ *  \param[in] data opaque data passed to verify(), get() and set() call-backs
+ *  \returns CTRL_CMD_HANDLED or CTRL_CMD_REPLY;  CTRL_CMD_ERROR on error */
 int ctrl_cmd_exec(vector vline, struct ctrl_cmd *command, vector node, void *data)
 {
 	int ret = CTRL_CMD_ERROR;
@@ -214,9 +203,23 @@ failure:
 	talloc_free(cmd->command);
 }
 
+/*! Install a given command definition at a given CTRL node.
+ *  \param[in] node CTRL node at which \a cmd is to be installed
+ *  \param[in] cmd command definition to be installed
+ *  \returns 0 on success; negative on error */
 int ctrl_cmd_install(enum ctrl_node_type node, struct ctrl_cmd_element *cmd)
 {
 	vector cmds_vec;
+
+	/* If this assert triggers, it means the program forgot to initialize
+	 * the CTRL interface first by calling ctrl_handle_alloc(2)() directly
+	 * or indirectly through ctrl_interface_setup_dynip(2)()
+	 */
+	if (!ctrl_node_vec) {
+		LOGP(DLCTRL, LOGL_ERROR,
+		     "ctrl_handle must be initialized prior to installing cmds.\n");
+		return -ENODEV;
+	}
 
 	cmds_vec = vector_lookup_ensure(ctrl_node_vec, node);
 
@@ -235,6 +238,10 @@ int ctrl_cmd_install(enum ctrl_node_type node, struct ctrl_cmd_element *cmd)
 	return 0;
 }
 
+/*! Allocate a control command of given \a type.
+ *  \param[in] ctx talloc context from which to allocate
+ *  \param[in] type command type to set after allocation
+ *  \returns callee-allocated \ref ctrl_cmd. Caller must talloc_free() it. */
 struct ctrl_cmd *ctrl_cmd_create(void *ctx, enum ctrl_type type)
 {
 	struct ctrl_cmd *cmd;
@@ -247,6 +254,10 @@ struct ctrl_cmd *ctrl_cmd_create(void *ctx, enum ctrl_type type)
 	return cmd;
 }
 
+/*! Perform a deepl copy of the given \a cmd, allocating memory from \a ctx.
+ *  \param[in] ctx talloc context from which to allocate
+ *  \param[in cmd CTRL command to be copied
+ *  \returns deep copy of \a cmd on success; NULL on error */
 struct ctrl_cmd *ctrl_cmd_cpy(void *ctx, struct ctrl_cmd *cmd)
 {
 	struct ctrl_cmd *cmd2;
@@ -283,7 +294,53 @@ err:
 	return NULL;
 }
 
+/*! Parse/Decode CTRL from \ref msgb into command struct.
+ *  \param[in] ctx talloc context from which to allocate
+ *  \param[in] msg message buffer containing command to be decoded
+ *  \returns callee-allocated decoded CTRL command; NULL on allocation or other failure
+ * The caller is responsible to talloc_free() the returned struct pointer. */
 struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
+{
+	struct ctrl_cmd *res = ctrl_cmd_parse2(ctx, msg);
+	if (res->type == CTRL_TYPE_ERROR) {
+		talloc_free(res);
+		return NULL;
+	}
+	return res;
+}
+
+static bool id_str_valid(const char *str)
+{
+	for (;*str;str++) {
+		if (!isdigit(*str))
+			return false;
+	}
+	return true;
+}
+
+/*! Parse/Decode CTRL from \ref msgb into command struct.
+ *  \param[in] ctx talloc context from which to allocate
+ *  \param[in] msg message buffer containing command to be decoded
+ *  \returns callee-allocated decoded CTRL command; NULL on allocation failure,
+ *  ctrl->type == CTRL_TYPE_ERROR and an error message in ctrl->reply on any error.
+ * The caller is responsible to talloc_free() the returned struct pointer.
+ * If information of the origin of the ERROR cmd returned is required (received
+ * or local parsing failure), use \ref ctrl_cmd_parse3 instead. */
+struct ctrl_cmd *ctrl_cmd_parse2(void *ctx, struct msgb *msg)
+{
+	bool unused;
+	return ctrl_cmd_parse3(ctx, msg, &unused);
+}
+
+/*! Parse/Decode CTRL from \ref msgb into command struct.
+ *  \param[in] ctx talloc context from which to allocate
+ *  \param[in] msg message buffer containing command to be decoded
+ *  \param[out] parse_failed Whether returned ERROR cmd was generatd locally
+ *  		(due to parse failure) or was received.
+ *  \returns callee-allocated decoded CTRL command; NULL on allocation failure,
+ *  ctrl->type == CTRL_TYPE_ERROR and an error message in ctrl->reply on any error.
+ * The caller is responsible to talloc_free() the returned struct pointer. */
+struct ctrl_cmd *ctrl_cmd_parse3(void *ctx, struct msgb *msg, bool *parse_failed)
 {
 	char *str, *tmp, *saveptr = NULL;
 	char *var, *val;
@@ -292,6 +349,7 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 	cmd = talloc_zero(ctx, struct ctrl_cmd);
 	if (!cmd) {
 		LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate.\n");
+		*parse_failed = true;
 		return NULL;
 	}
 
@@ -299,19 +357,22 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 	msgb_put_u8(msg, 0);
 	str = (char *) msg->l2h;
 
+	OSMO_ASSERT(str);
 	tmp = strtok_r(str, " ",  &saveptr);
 	if (!tmp) {
 		cmd->type = CTRL_TYPE_ERROR;
 		cmd->id = "err";
 		cmd->reply = "Request malformed";
+		LOGP(DLCTRL, LOGL_NOTICE, "Malformed request: \"%s\"\n", osmo_escape_str(str, -1));
 		goto err;
 	}
 
-	cmd->type = ctrl_cmd_str2type(tmp);
-	if (cmd->type == CTRL_TYPE_UNKNOWN) {
+	cmd->type = get_string_value(ctrl_type_vals, tmp);
+	if ((int)cmd->type < 0 || cmd->type == CTRL_TYPE_UNKNOWN) {
 		cmd->type = CTRL_TYPE_ERROR;
 		cmd->id = "err";
 		cmd->reply = "Request type unknown";
+		LOGP(DLCTRL, LOGL_NOTICE, "Request type unknown: \"%s\"\n", osmo_escape_str(str, -1));
 		goto err;
 	}
 
@@ -321,6 +382,17 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 		cmd->type = CTRL_TYPE_ERROR;
 		cmd->id = "err";
 		cmd->reply = "Missing ID";
+		LOGP(DLCTRL, LOGL_NOTICE, "Missing ID: \"%s\"\n", osmo_escape_str(str, -1));
+		goto err;
+	}
+
+	if (!id_str_valid(tmp) &&
+	    !(cmd->type == CTRL_TYPE_ERROR && strcmp(tmp, "err") == 0)) {
+		LOGP(DLCTRL, LOGL_NOTICE, "Invalid %s message ID number: \"%s\"\n",
+		     get_value_string(ctrl_type_vals, cmd->type), osmo_escape_str(tmp, -1));
+		cmd->type = CTRL_TYPE_ERROR;
+		cmd->id = "err";
+		cmd->reply = "Invalid message ID number";
 		goto err;
 	}
 	cmd->id = talloc_strdup(cmd, tmp);
@@ -329,15 +401,31 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 
 	switch (cmd->type) {
 		case CTRL_TYPE_GET:
-			var = strtok_r(NULL, " ", &saveptr);
+			var = strtok_r(NULL, " \n", &saveptr);
 			if (!var) {
 				cmd->type = CTRL_TYPE_ERROR;
 				cmd->reply = "GET incomplete";
-				LOGP(DLCTRL, LOGL_NOTICE, "GET Command incomplete\n");
+				LOGP(DLCTRL, LOGL_NOTICE, "GET Command incomplete: \"%s\"\n",
+				     osmo_escape_str(str, -1));
+				goto err;
+			}
+			if (!osmo_separated_identifiers_valid(var, ".")) {
+				cmd->type = CTRL_TYPE_ERROR;
+				cmd->reply = "GET variable contains invalid characters";
+				LOGP(DLCTRL, LOGL_NOTICE, "GET variable contains invalid characters: \"%s\"\n",
+				     osmo_escape_str(var, -1));
 				goto err;
 			}
 			cmd->variable = talloc_strdup(cmd, var);
-			LOGP(DLCTRL, LOGL_DEBUG, "Command: GET %s\n", cmd->variable);
+			var = strtok_r(NULL, "", &saveptr);
+			if (var) {
+				cmd->type = CTRL_TYPE_ERROR;
+				cmd->reply = "GET with trailing characters";
+				LOGP(DLCTRL, LOGL_NOTICE, "GET with trailing characters: \"%s\"\n",
+				     osmo_escape_str(var, -1));
+				goto err;
+			}
+			LOGP(DLCTRL, LOGL_DEBUG, "Command: GET %s %s\n", cmd->id, cmd->variable);
 			break;
 		case CTRL_TYPE_SET:
 			var = strtok_r(NULL, " ", &saveptr);
@@ -348,31 +436,60 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 				LOGP(DLCTRL, LOGL_NOTICE, "SET Command incomplete\n");
 				goto err;
 			}
+			if (!osmo_separated_identifiers_valid(var, ".")) {
+				cmd->type = CTRL_TYPE_ERROR;
+				cmd->reply = "SET variable contains invalid characters";
+				LOGP(DLCTRL, LOGL_NOTICE, "SET variable contains invalid characters: \"%s\"\n",
+				     osmo_escape_str(var, -1));
+				goto err;
+			}
 			cmd->variable = talloc_strdup(cmd, var);
 			cmd->value = talloc_strdup(cmd, val);
 			if (!cmd->variable || !cmd->value)
 				goto oom;
-			LOGP(DLCTRL, LOGL_DEBUG, "Command: SET %s = %s\n", cmd->variable, cmd->value);
-			break;
-		case CTRL_TYPE_GET_REPLY:
-		case CTRL_TYPE_SET_REPLY:
-		case CTRL_TYPE_TRAP:
-			var = strtok_r(NULL, " ", &saveptr);
-			val = strtok_r(NULL, " ", &saveptr);
-			if (!var || !val) {
+
+			var = strtok_r(NULL, "", &saveptr);
+			if (var) {
 				cmd->type = CTRL_TYPE_ERROR;
-				cmd->reply = "Trap/Reply incomplete";
-				LOGP(DLCTRL, LOGL_NOTICE, "Trap/Reply incomplete\n");
+				cmd->reply = "SET with trailing characters";
+				LOGP(DLCTRL, LOGL_NOTICE, "SET with trailing characters: \"%s\"\n",
+				     osmo_escape_str(var, -1));
 				goto err;
 			}
-			cmd->variable = talloc_strdup(cmd, var);
-			cmd->reply = talloc_strdup(cmd, val);
-			if (!cmd->variable || !cmd->reply)
-				goto oom;
-			LOGP(DLCTRL, LOGL_DEBUG, "Command: TRAP/REPLY %s: %s\n", cmd->variable, cmd->reply);
+
+			LOGP(DLCTRL, LOGL_DEBUG, "Command: SET %s %s = \"%s\"\n", cmd->id, cmd->variable,
+			     osmo_escape_str(cmd->value, -1));
 			break;
+#define REPLY_CASE(TYPE, NAME)  \
+		case TYPE: \
+			var = strtok_r(NULL, " ", &saveptr); \
+			val = strtok_r(NULL, "", &saveptr); \
+			if (!var) { \
+				cmd->type = CTRL_TYPE_ERROR; \
+				cmd->reply = NAME " incomplete"; \
+				LOGP(DLCTRL, LOGL_NOTICE, NAME " incomplete\n"); \
+				goto err; \
+			} \
+			if (!osmo_separated_identifiers_valid(var, ".")) { \
+				cmd->type = CTRL_TYPE_ERROR; \
+				cmd->reply = NAME " variable contains invalid characters"; \
+				LOGP(DLCTRL, LOGL_NOTICE, NAME " variable contains invalid characters: \"%s\"\n", \
+				     osmo_escape_str(var, -1)); \
+				goto err; \
+			} \
+			cmd->variable = talloc_strdup(cmd, var); \
+			cmd->reply = talloc_strdup(cmd, val); \
+			if (!cmd->variable || !cmd->reply) \
+				goto oom; \
+			LOGP(DLCTRL, LOGL_DEBUG, "Command: " NAME " %s %s: %s\n", cmd->id, cmd->variable, \
+			     osmo_escape_str(cmd->reply, -1)); \
+			break
+		REPLY_CASE(CTRL_TYPE_GET_REPLY, "GET_REPLY");
+		REPLY_CASE(CTRL_TYPE_SET_REPLY, "SET_REPLY");
+		REPLY_CASE(CTRL_TYPE_TRAP, "TRAP");
+#undef REPLY_CASE
 		case CTRL_TYPE_ERROR:
-			var = strtok_r(NULL, "\0", &saveptr);
+			var = strtok_r(NULL, "", &saveptr);
 			if (!var) {
 				cmd->reply = "";
 				goto err;
@@ -380,7 +497,8 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 			cmd->reply = talloc_strdup(cmd, var);
 			if (!cmd->reply)
 				goto oom;
-			LOGP(DLCTRL, LOGL_DEBUG, "Command: ERROR %s\n", cmd->reply);
+			LOGP(DLCTRL, LOGL_DEBUG, "Command: ERROR \"%s\"\n",
+			     osmo_escape_str(cmd->reply, -1));
 			break;
 		case CTRL_TYPE_UNKNOWN:
 		default:
@@ -389,105 +507,88 @@ struct ctrl_cmd *ctrl_cmd_parse(void *ctx, struct msgb *msg)
 			goto err;
 	}
 
+	*parse_failed = false;
 	return cmd;
 oom:
 	cmd->type = CTRL_TYPE_ERROR;
 	cmd->id = "err";
 	cmd->reply = "OOM";
 err:
-	talloc_free(cmd);
-	return NULL;
+	*parse_failed = true;
+	return cmd;
 }
 
+/*! Encode a given CTRL command from its parsed form into a message buffer.
+ *  \param[in] cmd decoded/parsed form of to-be-encoded command
+ *  \returns callee-allocated message buffer containing the encoded \a cmd; NULL on error */
 struct msgb *ctrl_cmd_make(struct ctrl_cmd *cmd)
 {
-	struct msgb *msg;
-	char *type, *tmp;
+	struct msgb *msg = NULL;
+	char *strbuf;
+	size_t len;
+	const char *type;
 
 	if (!cmd->id)
 		return NULL;
 
-	msg = msgb_alloc_headroom(4096, 128, "ctrl command make");
-	if (!msg)
-		return NULL;
-
-	type = ctrl_cmd_type2str(cmd->type);
+	type = get_value_string(ctrl_type_vals, cmd->type);
 
 	switch (cmd->type) {
 	case CTRL_TYPE_GET:
 		if (!cmd->variable)
-			goto err;
-
-		tmp = talloc_asprintf(cmd, "%s %s %s", type, cmd->id, cmd->variable);
-		if (!tmp) {
-			LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate cmd.\n");
-			goto err;
-		}
-
-		msg->l2h = msgb_put(msg, strlen(tmp));
-		memcpy(msg->l2h, tmp, strlen(tmp));
-		talloc_free(tmp);
+			return NULL;
+		strbuf = talloc_asprintf(cmd, "%s %s %s", type, cmd->id, cmd->variable);
 		break;
 	case CTRL_TYPE_SET:
 		if (!cmd->variable || !cmd->value)
-			goto err;
-
-		tmp = talloc_asprintf(cmd, "%s %s %s %s", type, cmd->id, cmd->variable,
-				cmd->value);
-		if (!tmp) {
-			LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate cmd.\n");
-			goto err;
-		}
-
-		msg->l2h = msgb_put(msg, strlen(tmp));
-		memcpy(msg->l2h, tmp, strlen(tmp));
-		talloc_free(tmp);
+			return NULL;
+		strbuf = talloc_asprintf(cmd, "%s %s %s %s", type, cmd->id,
+					 cmd->variable, cmd->value);
 		break;
 	case CTRL_TYPE_GET_REPLY:
 	case CTRL_TYPE_SET_REPLY:
 	case CTRL_TYPE_TRAP:
 		if (!cmd->variable || !cmd->reply)
-			goto err;
-
-		tmp = talloc_asprintf(cmd, "%s %s %s %s", type, cmd->id, cmd->variable,
-				cmd->reply);
-		if (!tmp) {
-			LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate cmd.\n");
-			goto err;
-		}
-
-		msg->l2h = msgb_put(msg, strlen(tmp));
-		memcpy(msg->l2h, tmp, strlen(tmp));
-		talloc_free(tmp);
+			return NULL;
+		strbuf = talloc_asprintf(cmd, "%s %s %s %s", type, cmd->id,
+					 cmd->variable, cmd->reply);
 		break;
 	case CTRL_TYPE_ERROR:
 		if (!cmd->reply)
-			goto err;
-
-		tmp = talloc_asprintf(cmd, "%s %s %s", type, cmd->id,
-				cmd->reply);
-		if (!tmp) {
-			LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate cmd.\n");
-			goto err;
-		}
-
-		msg->l2h = msgb_put(msg, strlen(tmp));
-		memcpy(msg->l2h, tmp, strlen(tmp));
-		talloc_free(tmp);
+			return NULL;
+		strbuf = talloc_asprintf(cmd, "%s %s %s", type, cmd->id, cmd->reply);
 		break;
 	default:
 		LOGP(DLCTRL, LOGL_NOTICE, "Unknown command type %i\n", cmd->type);
-		goto err;
-		break;
+		return NULL;
 	}
 
-	return msg;
+	if (!strbuf) {
+		LOGP(DLCTRL, LOGL_ERROR, "Failed to allocate cmd.\n");
+		goto ret;
+	}
+	len = strlen(strbuf);
 
-err:
-	msgb_free(msg);
-	return NULL;
+	msg = msgb_alloc_headroom(len + 128, 128, "ctrl ERROR command make");
+	if (!msg)
+		goto ret;
+	msg->l2h = msgb_put(msg, len);
+	memcpy(msg->l2h, strbuf, len);
+
+ret:
+	talloc_free(strbuf);
+	return msg;
 }
 
+/*! Build a deferred control command state and keep it the per-connection list of deferred commands.
+ *  This function is typically called by a ctrl command handler that wishes to defer returning a
+ *  response.  The reutnred state can later be used to check if the deferred command is still alive,
+ *  and to respond to the specific command.  This only works to defer the response to GET and SET.
+ *  \param[in] ctx talloc context from whihc to allocate the ctrl_cmd_def
+ *  \param[in] cmd the control command whose response is deferred
+ *  \param[in] data opaque, user-defined pointer
+ *  \param[in] secs number of seconds until the command times out
+ *  \returns callee-allocated ctrl_cmd_def */
 struct ctrl_cmd_def *
 ctrl_cmd_def_make(const void *ctx, struct ctrl_cmd *cmd, void *data, unsigned int secs)
 {
@@ -498,6 +599,7 @@ ctrl_cmd_def_make(const void *ctx, struct ctrl_cmd *cmd, void *data, unsigned in
 
 	cd = talloc_zero(ctx, struct ctrl_cmd_def);
 
+	cmd->defer = cd;
 	cd->cmd = cmd;
 	cd->data = data;
 
@@ -507,6 +609,9 @@ ctrl_cmd_def_make(const void *ctx, struct ctrl_cmd *cmd, void *data, unsigned in
 	return cd;
 }
 
+/*! Determine if the given deferred control command is still alive or a zombie.
+ *  \param[in] cd deferred ctrl command state
+ *  \returns 0 is \a cd is still alive; 1 if it's a zombie */
 int ctrl_cmd_def_is_zombie(struct ctrl_cmd_def *cd)
 {
 	/* luckily we're still alive */
@@ -520,6 +625,10 @@ int ctrl_cmd_def_is_zombie(struct ctrl_cmd_def *cd)
 	return 1;
 }
 
+/*! Send the response to a deferred ctrl command.
+ *  The command can only be a resply to a SET or a GET operation.
+ *  \param[in] cd deferred ctrl command state
+ *  \returns 0 if command sent successfully; negative on error */
 int ctrl_cmd_def_send(struct ctrl_cmd_def *cd)
 {
 	struct ctrl_cmd *cmd = cd->cmd;
@@ -539,7 +648,7 @@ int ctrl_cmd_def_send(struct ctrl_cmd_def *cd)
 		cmd->type = CTRL_TYPE_ERROR;
 	}
 
-	rc = ctrl_cmd_send(&cmd->ccon->write_queue, cmd);
+	rc = ctrl_cmd_send2(cmd->ccon, cmd);
 
 	talloc_free(cmd);
 	llist_del(&cd->list);

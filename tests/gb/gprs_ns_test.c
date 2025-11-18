@@ -1,6 +1,8 @@
 /* test routines for NS connection handling
- * (C) 2013 by sysmocom s.f.m.c. GmbH
+ * (C) 2013 by sysmocom - s.f.m.c. GmbH
  * Author: Jacob Erlbeck <jerlbeck@sysmocom.de>
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #undef _GNU_SOURCE
@@ -178,61 +180,12 @@ static void setup_bssgp(struct gprs_ns_inst *nsi, struct sockaddr_in *src_addr,
 	send_bssgp_reset(nsi, src_addr, bvci);
 }
 
-/* GPRS Network Service, PDU type: NS_RESET,
- * Cause: O&M intervention, NS VCI: 0x1122, NSEI 0x1122
- */
-static const unsigned char gprs_ns_reset[12] = {
-	0x02, 0x00, 0x81, 0x01, 0x01, 0x82, 0x11, 0x22,
-	0x04, 0x82, 0x11, 0x22
-};
-
-/* GPRS Network Service, PDU type: NS_RESET,
- * Cause: O&M intervention, NS VCI: 0x3344, NSEI 0x1122
- */
-static const unsigned char gprs_ns_reset_vci2[12] = {
-	0x02, 0x00, 0x81, 0x01, 0x01, 0x82, 0x33, 0x44,
-	0x04, 0x82, 0x11, 0x22
-};
-
-/* GPRS Network Service, PDU type: NS_RESET,
- * Cause: O&M intervention, NS VCI: 0x1122, NSEI 0x3344
- */
-static const unsigned char gprs_ns_reset_nsei2[12] = {
-	0x02, 0x00, 0x81, 0x01, 0x01, 0x82, 0x11, 0x22,
-	0x04, 0x82, 0x33, 0x44
-};
-
-/* GPRS Network Service, PDU type: NS_ALIVE */
-static const unsigned char gprs_ns_alive[1] = {
-	0x0a
-};
-
 /* GPRS Network Service, PDU type: NS_STATUS,
  * Cause: PDU not compatible with the protocol state
  * PDU: NS_ALIVE
  */
 static const unsigned char gprs_ns_status_invalid_alive[7] = {
 	0x08, 0x00, 0x81, 0x0a, 0x02, 0x81, 0x0a
-};
-
-/* GPRS Network Service, PDU type: NS_ALIVE_ACK */
-static const unsigned char gprs_ns_alive_ack[1] = {
-	0x0b
-};
-
-/* GPRS Network Service, PDU type: NS_UNBLOCK */
-static const unsigned char gprs_ns_unblock[1] = {
-	0x06
-};
-
-
-/* GPRS Network Service, PDU type: NS_STATUS,
- * Cause: PDU not compatible with the protocol state
- * PDU: NS_RESET_ACK, NS VCI: 0x1122, NSEI 0x1122
- */
-static const unsigned char gprs_ns_status_invalid_reset_ack[15] = {
-	0x08, 0x00, 0x81, 0x0a, 0x02, 0x89, 0x03, 0x01,
-	0x82, 0x11, 0x22, 0x04, 0x82, 0x11, 0x22
 };
 
 /* GPRS Network Service, PDU type: NS_UNITDATA, BVCI 0 */
@@ -249,7 +202,7 @@ int gprs_ns_rcvmsg(struct gprs_ns_inst *nsi, struct msgb *msg,
 int gprs_ns_callback(enum gprs_ns_evt event, struct gprs_nsvc *nsvc,
 			 struct msgb *msg, uint16_t bvci)
 {
-	printf("CALLBACK, event %d, msg length %d, bvci 0x%04x\n%s\n\n",
+	printf("CALLBACK, event %d, msg length %td, bvci 0x%04x\n%s\n\n",
 			event, msgb_bssgp_len(msg), bvci,
 			osmo_hexdump(msgb_bssgph(msg), msgb_bssgp_len(msg)));
 	return 0;
@@ -270,9 +223,9 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
 	sent_pdu_type = len > 0 ? ((uint8_t *)buf)[0] : -1;
 
 	if (dest_host == REMOTE_BSS_ADDR)
-		printf("MESSAGE to BSS, msg length %d\n%s\n\n", len, osmo_hexdump(buf, len));
+		printf("MESSAGE to BSS, msg length %zu\n%s\n\n", len, osmo_hexdump(buf, len));
 	else if (dest_host == REMOTE_SGSN_ADDR)
-		printf("MESSAGE to SGSN, msg length %d\n%s\n\n", len, osmo_hexdump(buf, len));
+		printf("MESSAGE to SGSN, msg length %zu\n%s\n\n", len, osmo_hexdump(buf, len));
 	else
 		return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 
@@ -294,10 +247,10 @@ int gprs_ns_sendmsg(struct gprs_ns_inst *nsi, struct msgb *msg)
 		real_gprs_ns_sendmsg = dlsym(RTLD_NEXT, "gprs_ns_sendmsg");
 
 	if (nsei == SGSN_NSEI)
-		printf("NS UNITDATA MESSAGE to SGSN, BVCI 0x%04x, msg length %d\n%s\n\n",
+		printf("NS UNITDATA MESSAGE to SGSN, BVCI 0x%04x, msg length %zu\n%s\n\n",
 		       bvci, len, osmo_hexdump(buf, len));
 	else
-		printf("NS UNITDATA MESSAGE to BSS, BVCI 0x%04x, msg length %d\n%s\n\n",
+		printf("NS UNITDATA MESSAGE to BSS, BVCI 0x%04x, msg length %zu\n%s\n\n",
 		       bvci, len, osmo_hexdump(buf, len));
 
 	return real_gprs_ns_sendmsg(nsi, msg);
@@ -309,8 +262,8 @@ static void dump_rate_ctr_group(FILE *stream, const char *prefix,
 	unsigned int i;
 
 	for (i = 0; i < ctrg->desc->num_ctr; i++) {
-		struct rate_ctr *ctr = &ctrg->ctr[i];
-		if (ctr->current && !strchr(ctrg->desc->ctr_desc[i].name, '.'))
+		struct rate_ctr *ctr = rate_ctr_group_get_ctr(ctrg, i);
+		if (ctr->current && !strchr(ctrg->desc->ctr_desc[i].name, ':'))
 			fprintf(stream, " %s%s: %llu%s",
 				prefix, ctrg->desc->ctr_desc[i].description,
 				(long long)ctr->current,
@@ -382,7 +335,7 @@ static int gprs_process_message(struct gprs_ns_inst *nsi, const char *text, stru
 	struct msgb *msg;
 	int ret;
 	if (data_len > NS_ALLOC_SIZE - NS_ALLOC_HEADROOM) {
-		fprintf(stderr, "message too long: %d\n", data_len);
+		fprintf(stderr, "message too long: %zu\n", data_len);
 		return -1;
 	}
 
@@ -411,7 +364,7 @@ static int gprs_send_message(struct gprs_ns_inst *nsi, const char *text,
 	struct msgb *msg;
 	int ret;
 	if (data_len > NS_ALLOC_SIZE - NS_ALLOC_HEADROOM) {
-		fprintf(stderr, "message too long: %d\n", data_len);
+		fprintf(stderr, "message too long: %zu\n", data_len);
 		return -1;
 	}
 
@@ -439,11 +392,12 @@ static void gprs_dump_nsi(struct gprs_ns_inst *nsi)
 	printf("Current NS-VCIs:\n");
 	llist_for_each_entry(nsvc, &nsi->gprs_nsvcs, list) {
 		struct sockaddr_in *peer = &(nsvc->ip.bts_addr);
-		printf("    VCI 0x%04x, NSEI 0x%04x, peer 0x%08x:%d%s%s%s\n",
+		printf("    VCI 0x%04x, NSEI 0x%04x, peer 0x%08x:%d, %s, %s, %s%s\n",
 		       nsvc->nsvci, nsvc->nsei,
 		       ntohl(peer->sin_addr.s_addr), ntohs(peer->sin_port),
-		       nsvc->state & NSE_S_BLOCKED ? ", blocked" : "",
-		       nsvc->state & NSE_S_ALIVE   ? "" : ", dead",
+		       NS_DESC_A(nsvc->state),
+		       NS_DESC_B(nsvc->state),
+		       NS_DESC_R(nsvc->state),
 		       nsvc->nsvci_is_valid   ? "" : ", invalid VCI"
 		      );
 		dump_rate_ctr_group(stdout, "        ", nsvc->ctrg);
@@ -466,7 +420,7 @@ static int expire_nsvc_timer(struct gprs_nsvc *nsvc)
 	return rc;
 }
 
-static void test_nsvc()
+static void test_nsvc(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in peer[1] = {{0},};
@@ -505,7 +459,7 @@ static void test_nsvc()
 	alarm(0);
 }
 
-static void test_ignored_messages()
+static void test_ignored_messages(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in peer[1] = {{0},};
@@ -532,7 +486,7 @@ static void test_ignored_messages()
 	nsi = NULL;
 }
 
-static void test_bss_port_changes()
+static void test_bss_port_changes(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in peer[4] = {{0},};
@@ -586,7 +540,7 @@ static void test_bss_port_changes()
 	nsi = NULL;
 }
 
-static void test_bss_reset_ack()
+static void test_bss_reset_ack(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in peer[4] = {{0},};
@@ -710,12 +664,30 @@ static void test_bss_reset_ack()
 	send_ns_reset_ack(nsi, nse[0], 0xf001, 0x1000);
 	gprs_dump_nsi(nsi);
 
+	/* Test crossing RESET and UNBLOCK_ACK */
+
+	printf("---  RESET (BSS -> SGSN) crossing an UNBLOCK_ACK (SGSN -> BSS) ---\n\n");
+
+	setup_ns(nsi, nse[0], 0x1001, 0x1000);
+	nsvc = gprs_nsvc_by_nsvci(nsi, 0x1001);
+	gprs_nsvc_reset(nsvc, NS_CAUSE_OM_INTERVENTION);
+	OSMO_ASSERT(nsvc->state & NSE_S_BLOCKED);
+	OSMO_ASSERT(nsvc->state & NSE_S_RESET);
+	send_ns_unblock_ack(nsi, nse[0]);
+	gprs_dump_nsi(nsi);
+	send_ns_reset_ack(nsi, nse[0], 0x1001, 0x1000);
+	expire_nsvc_timer(nsvc);
+	OSMO_ASSERT(nsvc->state & NSE_S_BLOCKED);
+	OSMO_ASSERT(nsvc->state & NSE_S_RESET);
+	send_ns_reset_ack(nsi, nse[0], 0x1001, 0x1000);
+	gprs_dump_nsi(nsi);
+
 	gprs_ns_destroy(nsi);
 	nsi = NULL;
 }
 
 
-static void test_sgsn_reset()
+static void test_sgsn_reset(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in sgsn_peer= {0};
@@ -793,7 +765,7 @@ static void test_sgsn_reset()
 	nsi = NULL;
 }
 
-static void test_sgsn_reset_invalid_state()
+static void test_sgsn_reset_invalid_state(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in sgsn_peer= {0};
@@ -861,7 +833,7 @@ static void test_sgsn_reset_invalid_state()
 	nsi = NULL;
 }
 
-static void test_sgsn_output()
+static void test_sgsn_output(void)
 {
 	struct gprs_ns_inst *nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 	struct sockaddr_in sgsn_peer= {0};
@@ -929,13 +901,14 @@ static struct log_info info = {};
 
 int main(int argc, char **argv)
 {
-	osmo_init_logging(&info);
+	void *ctx = talloc_named_const(NULL, 0, "gprs_ns_test");
+	osmo_init_logging2(ctx, &info);
 	log_set_use_color(osmo_stderr_target, 0);
-	log_set_print_filename(osmo_stderr_target, 0);
-	osmo_signal_register_handler(SS_L_NS, &test_signal, NULL);
-
-	log_set_print_filename(osmo_stderr_target, 0);
+	log_set_print_category(osmo_stderr_target, 0);
+	log_set_print_category_hex(osmo_stderr_target, 0);
+	log_set_print_filename2(osmo_stderr_target, LOG_FILENAME_NONE);
 	log_set_log_level(osmo_stderr_target, LOGL_INFO);
+	osmo_signal_register_handler(SS_L_NS, &test_signal, NULL);
 
 	setlinebuf(stdout);
 

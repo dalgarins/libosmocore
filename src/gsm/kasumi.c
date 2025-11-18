@@ -1,8 +1,10 @@
-/* Kasumi cipher and KGcore functions */
-
-/* (C) 2013 by Max <Max.Suraev@fairwaves.ru>
- *
+/*! \file kasumi.c
+ * Kasumi cipher and KGcore functions. */
+/*
+ * (C) 2013 by Max <Max.Suraev@fairwaves.ru>
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,10 +15,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -157,6 +155,7 @@ void _kasumi_key_expand(const uint8_t *key, uint16_t *KLi1, uint16_t *KLi2, uint
 	}
 }
 
+/* if cl is not multiple of 8 (a byte), co needs to be sized on the upper bound so the entire byte can be written. */
 void _kasumi_kgcore(uint8_t CA, uint8_t cb, uint32_t cc, uint8_t cd, const uint8_t *ck, uint8_t *co, uint16_t cl)
 {
 	uint16_t KLi1[8], KLi2[8], KOi1[8], KOi2[8], KOi3[8], KIi1[8], KIi2[8], KIi3[8], i;
@@ -179,8 +178,16 @@ void _kasumi_kgcore(uint8_t CA, uint8_t cb, uint32_t cc, uint8_t cd, const uint8
 	_kasumi_key_expand(ck, KLi1, KLi2, KOi1, KOi2, KOi3, KIi1, KIi2, KIi3);
 
 	/* i is a block counter */
-	for (i = 0; i < cl / 64 + 1; i++) {
+	for (i = 0; i < cl / 64; i++) {
 		BLK = _kasumi(A ^ i ^ BLK, KLi1, KLi2, KOi1, KOi2, KOi3, KIi1, KIi2, KIi3);
 		osmo_store64be(BLK, co + (i * 8));
+	}
+
+	/* Last 64-byte unaligned round. Take also into account last bits non-byte aligned. */
+	uint8_t bytes_remain = cl/8%8 + (cl%8 ? 1 : 0);
+	if (bytes_remain) {
+		BLK = _kasumi(A ^ (cl / 64) ^ BLK, KLi1, KLi2, KOi1, KOi2, KOi3, KIi1, KIi2, KIi3);
+		BLK = BLK >> (8-bytes_remain)*8;
+		osmo_store64be_ext(BLK, co + (cl / 64 * 8), bytes_remain);
 	}
 }

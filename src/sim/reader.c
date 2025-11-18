@@ -1,8 +1,11 @@
-/* Card reader abstraction for libosmosim */
+/*! \file reader.c
+ * Card reader abstraction for libosmosim. */
 /*
  * (C) 2012 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -32,6 +31,7 @@
 #include <osmocom/core/msgb.h>
 #include <osmocom/sim/sim.h>
 
+#include "config.h"
 
 #include "sim_int.h"
 
@@ -40,7 +40,7 @@ static int get_sw(struct msgb *resp)
 {
 	int ret;
 
-	if (!msgb_apdu_de(resp) || msgb_apdu_le(resp) < 2)
+	if (!resp->l2h || msgb_apdu_le(resp) < 2)
 		return -EIO;
 
 	ret = msgb_get_u16(resp);
@@ -119,7 +119,6 @@ transceive_again:
 
 	/* save SW */
 	sw = msgb_apdu_sw(tmsg);
-	printf("sw = 0x%04x\n", sw);
 	msgb_apdu_sw(amsg) = sw;
 
 	switch (msgb_apdu_case(amsg)) {
@@ -239,9 +238,11 @@ struct osim_reader_hdl *osim_reader_open(enum osim_reader_driver driver, int idx
 	struct osim_reader_hdl *rh;
 
 	switch (driver) {
+#ifdef HAVE_PCSC
 	case OSIM_READER_DRV_PCSC:
 		ops = &pcsc_reader_ops;
 		break;
+#endif
 	default:
 		return NULL;
 	}
@@ -271,4 +272,25 @@ struct osim_card_hdl *osim_card_open(struct osim_reader_hdl *rh, enum osim_proto
 	ch->proto = proto;
 
 	return ch;
+}
+
+int osim_card_reset(struct osim_card_hdl *card, bool cold_reset)
+{
+	struct osim_reader_hdl *rh = card->reader;
+
+	return rh->ops->card_reset(card, cold_reset);
+}
+
+int osim_card_close(struct osim_card_hdl *card)
+{
+	struct osim_reader_hdl *rh = card->reader;
+	int rc;
+
+	rc = rh->ops->card_close(card);
+
+	card->reader = NULL;
+	talloc_free(card);
+	rh->card = NULL;
+
+	return rc;
 }

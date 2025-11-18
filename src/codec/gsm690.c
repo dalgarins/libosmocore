@@ -1,9 +1,12 @@
-/* GSM 06.90 - GSM AMR Codec */
-
+/*! \file gsm690.c
+ * GSM 06.90 - GSM AMR Codec. */
 /*
  * (C) 2010 Sylvain Munaut <tnt@246tNt.com>
+ * (C) 2020 Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,14 +18,16 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <stdint.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 
+#include <osmocom/core/utils.h>
+#include <osmocom/core/bits.h>
+#include <osmocom/codec/codec.h>
 /*
  * These table map between the raw encoder parameter output and
  * the format used before channel coding. Both in GSM and in various
@@ -208,3 +213,469 @@ const uint16_t gsm690_4_75_bitorder[95] = {
 	 88,  90,  91,  34,  55,  68,  89,  37,  58,  71,
 	 92,  31,  52,  65,  86,
 };
+
+/*! These constants refer to the length of one "AMR core frame" as per
+ *  TS 26.101 Section 4.2.2 / Table 2. */
+const uint8_t gsm690_bitlength[AMR_NO_DATA+1] = {
+	[AMR_4_75] = 95,
+	[AMR_5_15] = 103,
+	[AMR_5_90] = 118,
+	[AMR_6_70] = 134,
+	[AMR_7_40] = 148,
+	[AMR_7_95] = 159,
+	[AMR_10_2] = 204,
+	[AMR_12_2] = 244,
+	[AMR_SID] = 39,
+};
+
+struct ts26101_reorder_table {
+	/*! Table as per TS 26.101 Annex B to compute d-bits from s-bits */
+	const uint16_t *s_to_d;
+	/*! size of table */
+	uint8_t len;
+};
+
+static const struct ts26101_reorder_table ts26101_reorder_tables[8] = {
+	[AMR_4_75] = {
+		.s_to_d = gsm690_4_75_bitorder,
+		.len = ARRAY_SIZE(gsm690_4_75_bitorder),
+	},
+	[AMR_5_15] = {
+		.s_to_d = gsm690_5_15_bitorder,
+		.len = ARRAY_SIZE(gsm690_5_15_bitorder),
+	},
+	[AMR_5_90] = {
+		.s_to_d = gsm690_5_9_bitorder,
+		.len = ARRAY_SIZE(gsm690_5_9_bitorder),
+	},
+	[AMR_6_70] = {
+		.s_to_d = gsm690_6_7_bitorder,
+		.len = ARRAY_SIZE(gsm690_6_7_bitorder),
+	},
+	[AMR_7_40] = {
+		.s_to_d = gsm690_7_4_bitorder,
+		.len = ARRAY_SIZE(gsm690_7_4_bitorder),
+	},
+	[AMR_7_95] = {
+		.s_to_d = gsm690_7_95_bitorder,
+		.len = ARRAY_SIZE(gsm690_7_95_bitorder),
+	},
+	[AMR_10_2] = {
+		.s_to_d = gsm690_10_2_bitorder,
+		.len = ARRAY_SIZE(gsm690_10_2_bitorder),
+	},
+	[AMR_12_2] = {
+		.s_to_d = gsm690_12_2_bitorder,
+		.len = ARRAY_SIZE(gsm690_12_2_bitorder),
+	},
+};
+
+/*! Convert from S-bits (codec output) to d-bits.
+ *  \param[out] out user-provided output buffer for generated unpacked d-bits
+ *  \param[in] in input buffer for unpacked s-bits
+ *  \param[in] n_bits number of bits (in both in and out)
+ *  \param[in] AMR mode (0..7) */
+int osmo_amr_s_to_d(ubit_t *out, const ubit_t *in, uint16_t n_bits, enum osmo_amr_type amr_mode)
+{
+	const struct ts26101_reorder_table *tbl;
+	int i;
+
+	if (amr_mode >= ARRAY_SIZE(ts26101_reorder_tables))
+		return -ENODEV;
+
+	tbl = &ts26101_reorder_tables[amr_mode];
+
+	if (n_bits > tbl->len)
+		return -EINVAL;
+
+	for (i = 0; i < n_bits; i++) {
+		uint16_t n = tbl->s_to_d[i];
+		out[i] = in[n];
+	}
+
+	return n_bits;
+}
+
+/*! Convert from d-bits to s-bits (codec input).
+ *  \param[out] out user-provided output buffer for generated unpacked s-bits
+ *  \param[in] in input buffer for unpacked d-bits
+ *  \param[in] n_bits number of bits (in both in and out)
+ *  \param[in] AMR mode (0..7) */
+int osmo_amr_d_to_s(ubit_t *out, const ubit_t *in, uint16_t n_bits, enum osmo_amr_type amr_mode)
+{
+	const struct ts26101_reorder_table *tbl;
+	int i;
+
+	if (amr_mode >= ARRAY_SIZE(ts26101_reorder_tables))
+		return -ENODEV;
+
+	tbl = &ts26101_reorder_tables[amr_mode];
+
+	if (n_bits > tbl->len)
+		return -EINVAL;
+
+	for (i = 0; i < n_bits; i++) {
+		uint16_t n = tbl->s_to_d[i];
+		out[n] = in[i];
+	}
+
+	return n_bits;
+}
+
+/*! This table provides the number of s-bits (as defined in TS 26.090 and
+ *  TS 26.092, clause 7 in each spec) for every possible speech or SID mode
+ *  in AMR.  It differs from gsm690_bitlength[] in the case of SID: there are
+ *  35 s-bits in the original 2G definition that started out as GSM 06.92,
+ *  captured in this table, whereas 3G-oriented TS 26.101 AMR Core Frame
+ *  definition captured in gsm690_bitlength[] has 39 d-bits for SID instead.
+ *
+ *  The array is allocated up to AMR_NO_DATA in order to reduce the probability
+ *  of buggy code making an out-of-bounds read access.
+ */
+const uint8_t osmo_amr_sbits_per_mode[AMR_NO_DATA+1] = {
+	[AMR_4_75] = 95,
+	[AMR_5_15] = 103,
+	[AMR_5_90] = 118,
+	[AMR_6_70] = 134,
+	[AMR_7_40] = 148,
+	[AMR_7_95] = 159,
+	[AMR_10_2] = 204,
+	[AMR_12_2] = 244,
+	[AMR_SID]  = 35,
+};
+
+/*! This table provides the number of distinct codec parameters (groupings
+ *  of s-bits into 16-bit parameter words as implemented in 3GPP reference
+ *  C code and assumed in TS 26.073 definition of decoder homing frames)
+ *  that exist for every possible speech or SID mode in AMR.
+ *
+ *  The array is allocated up to AMR_NO_DATA in order to reduce the probability
+ *  of buggy code making an out-of-bounds read access.
+ */
+const uint8_t osmo_amr_params_per_mode[AMR_NO_DATA+1] = {
+	[AMR_4_75] = 17,
+	[AMR_5_15] = 19,
+	[AMR_5_90] = 19,
+	[AMR_6_70] = 19,
+	[AMR_7_40] = 19,
+	[AMR_7_95] = 23,
+	[AMR_10_2] = 39,
+	[AMR_12_2] = 57,
+	[AMR_SID]  = 5,
+};
+
+/* parameter sizes (# of bits), one table per mode */
+
+static const uint8_t bit_counts_4_75[17] = {
+	8, 8, 7,				/* LSP VQ */
+	8, 7, 2, 8,				/* 1st subframe */
+	4, 7, 2,				/* 2nd subframe */
+	4, 7, 2, 8,				/* 3rd subframe */
+	4, 7, 2,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_5_15[19] = {
+	8, 8, 7,				/* LSP VQ */
+	8, 7, 2, 6,				/* 1st subframe */
+	4, 7, 2, 6,				/* 2nd subframe */
+	4, 7, 2, 6,				/* 3rd subframe */
+	4, 7, 2, 6,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_5_90[19] = {
+	8, 9, 9,				/* LSP VQ */
+	8, 9, 2, 6,				/* 1st subframe */
+	4, 9, 2, 6,				/* 2nd subframe */
+	8, 9, 2, 6,				/* 3rd subframe */
+	4, 9, 2, 6,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_6_70[19] = {
+	8, 9, 9,				/* LSP VQ */
+	8, 11, 3, 7,				/* 1st subframe */
+	4, 11, 3, 7,				/* 2nd subframe */
+	8, 11, 3, 7,				/* 3rd subframe */
+	4, 11, 3, 7,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_7_40[19] = {
+	8, 9, 9,				/* LSP VQ */
+	8, 13, 4, 7,				/* 1st subframe */
+	5, 13, 4, 7,				/* 2nd subframe */
+	8, 13, 4, 7,				/* 3rd subframe */
+	5, 13, 4, 7,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_7_95[23] = {
+	9, 9, 9,				/* LSP VQ */
+	8, 13, 4, 4, 5,				/* 1st subframe */
+	6, 13, 4, 4, 5,				/* 2nd subframe */
+	8, 13, 4, 4, 5,				/* 3rd subframe */
+	6, 13, 4, 4, 5,				/* 4th subframe */
+};
+
+static const uint8_t bit_counts_10_2[39] = {
+	8, 9, 9,				/* LSP VQ */
+	8, 1, 1, 1, 1, 10, 10, 7, 7,		/* 1st subframe */
+	5, 1, 1, 1, 1, 10, 10, 7, 7,		/* 2nd subframe */
+	8, 1, 1, 1, 1, 10, 10, 7, 7,		/* 3rd subframe */
+	5, 1, 1, 1, 1, 10, 10, 7, 7,		/* 4th subframe */
+};
+
+static const uint8_t bit_counts_12_2[57] = {
+	7, 8, 9, 8, 6,				/* LSP VQ */
+	9, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 5,	/* 1st subframe */
+	6, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 5,	/* 2nd subframe */
+	9, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 5,	/* 3rd subframe */
+	6, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 5,	/* 4th subframe */
+};
+
+static const uint8_t bit_counts_sid[5] = { 3, 8, 9, 9, 6 };
+
+/* overall table with all parameter sizes for all modes */
+static const uint8_t * const bit_counts_per_mode[AMR_SID + 1] = {
+	bit_counts_4_75,
+	bit_counts_5_15,
+	bit_counts_5_90,
+	bit_counts_6_70,
+	bit_counts_7_40,
+	bit_counts_7_95,
+	bit_counts_10_2,
+	bit_counts_12_2,
+	bit_counts_sid,
+};
+
+/*! Convert AMR codec frame from parameters to s-bits
+ *
+ * \param[out] s_bits Caller-provided array of unpacked bits to be filled
+ * with s-bits of the converted codec frame.
+ * \param[in] param Array of AMR codec speech or SID parameters.
+ * \param[in] mode Speech or SID mode according to which conversion shall
+ * be performed.
+ * \returns 0 if successful, or negative if \ref mode is invalid.
+ */
+int osmo_amr_param_to_sbits(ubit_t *s_bits, const uint16_t *param,
+				enum osmo_amr_type mode)
+{
+	if (mode > AMR_SID)
+		return -EINVAL;
+
+	const uint8_t *table = bit_counts_per_mode[mode];
+	unsigned nparam = osmo_amr_params_per_mode[mode];
+	unsigned n, p, mask;
+	ubit_t *b = s_bits;
+
+	for (n = 0; n < nparam; n++) {
+		p = param[n];
+		mask = 1 << (*table++ - 1);
+		for (; mask; mask >>= 1) {
+			if (p & mask)
+				*b++ = 1;
+			else
+				*b++ = 0;
+		}
+	}
+	return 0;
+}
+
+/*! Convert AMR codec frame from s-bits to parameters
+ *
+ * \param[out] param Caller-provided buffer for array of AMR codec speech
+ * or SID parameters.
+ * \param[in] s_bits Unpacked s-bits of the frame to be converted.
+ * \param[in] mode Speech or SID mode according to which conversion shall
+ * be performed.
+ * \returns 0 if successful, or negative if \ref mode is invalid.
+ */
+int osmo_amr_sbits_to_param(uint16_t *param, const ubit_t *s_bits,
+				enum osmo_amr_type mode)
+{
+	if (mode > AMR_SID)
+		return -EINVAL;
+
+	const ubit_t *bit = s_bits;
+	const uint8_t *table = bit_counts_per_mode[mode];
+	unsigned nparam = osmo_amr_params_per_mode[mode];
+	unsigned n, m, acc;
+
+	for (n = 0; n < nparam; n++) {
+		acc = 0;
+		for (m = 0; m < *table; m++) {
+			acc <<= 1;
+			if (*bit)
+				acc |= 1;
+			bit++;
+		}
+		param[n] = acc;
+		table++;
+	}
+	return 0;
+}
+
+/* For each of the 8 modes of AMR codec, there exists a special encoded frame
+ * bit pattern which the speech decoder is required to recognize as a special
+ * decoder homing frame (DHF), as specified in TS 26.090 section 8.4.  Bit
+ * patterns of these 8 DHFs are specified in TS 26.073 Tables 9a through 9h
+ * and captured in the following const arrays.  Note that the canonical form
+ * of each DHF is an array of codec parameters; in order to emit any of these
+ * DHFs as an RTP payload or a TRAU frame, the application will need to
+ * convert it to s-bits with osmo_amr_param_to_sbits(), followed by
+ * osmo_amr_s_to_d() in the case of RTP output.
+ */
+
+const uint16_t osmo_amr_dhf_4_75[17] = {
+	0x00F8, 0x009D, 0x001C, 0x0066, 0x0000, 0x0003, 0x0028, 0x000F,
+	0x0038, 0x0001, 0x000F, 0x0031, 0x0002, 0x0008, 0x000F, 0x0026,
+	0x0003
+};
+
+const uint16_t osmo_amr_dhf_5_15[19] = {
+	0x00F8, 0x009D, 0x001C, 0x0066, 0x0000, 0x0003, 0x0037, 0x000F,
+	0x0000, 0x0003, 0x0005, 0x000F, 0x0037, 0x0003, 0x0037, 0x000F,
+	0x0023, 0x0003, 0x001F
+};
+
+const uint16_t osmo_amr_dhf_5_90[19] = {
+	0x00F8, 0x00E3, 0x002F, 0x00BD, 0x0000, 0x0003, 0x0037, 0x000F,
+	0x0001, 0x0003, 0x000F, 0x0060, 0x00F9, 0x0003, 0x0037, 0x000F,
+	0x0000, 0x0003, 0x0037
+};
+
+const uint16_t osmo_amr_dhf_6_70[19] = {
+	0x00F8, 0x00E3, 0x002F, 0x00BD, 0x0002, 0x0007, 0x0000, 0x000F,
+	0x0098, 0x0007, 0x0061, 0x0060, 0x05C5, 0x0007, 0x0000, 0x000F,
+	0x0318, 0x0007, 0x0000
+};
+
+const uint16_t osmo_amr_dhf_7_40[19] = {
+	0x00F8, 0x00E3, 0x002F, 0x00BD, 0x0006, 0x000F, 0x0000, 0x001B,
+	0x0208, 0x000F, 0x0062, 0x0060, 0x1BA6, 0x000F, 0x0000, 0x001B,
+	0x0006, 0x000F, 0x0000
+};
+
+const uint16_t osmo_amr_dhf_7_95[23] = {
+	0x00C2, 0x00E3, 0x002F, 0x00BD, 0x0006, 0x000F, 0x000A, 0x0000,
+	0x0039, 0x1C08, 0x0007, 0x000A, 0x000B, 0x0063, 0x11A6, 0x000F,
+	0x0001, 0x0000, 0x0039, 0x09A0, 0x000F, 0x0002, 0x0001
+};
+
+const uint16_t osmo_amr_dhf_10_2[39] = {
+	0x00F8, 0x00E3, 0x002F, 0x0045, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x001B, 0x0000, 0x0001, 0x0000,
+	0x0001, 0x0326, 0x00CE, 0x007E, 0x0051, 0x0062, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x015A, 0x0359, 0x0076, 0x0000, 0x001B, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x017C, 0x0215, 0x0038, 0x0030
+};
+
+const uint16_t osmo_amr_dhf_12_2[57] = {
+	0x0004, 0x002A, 0x00DB, 0x0096, 0x002A, 0x0156, 0x000B, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0036, 0x000B, 0x0000, 0x000F, 0x000E, 0x000C,
+	0x000D, 0x0000, 0x0001, 0x0005, 0x0007, 0x0001, 0x0008, 0x0024,
+	0x0000, 0x0001, 0x0000, 0x0005, 0x0006, 0x0001, 0x0002, 0x0004,
+	0x0007, 0x0004, 0x0002, 0x0003, 0x0036, 0x000B, 0x0000, 0x0002,
+	0x0004, 0x0000, 0x0003, 0x0006, 0x0001, 0x0007, 0x0006, 0x0005,
+	0x0000
+};
+
+/* See also RFC 4867 §3.6, Table 1, Column "Total speech bits" */
+static const uint8_t amr_len_by_ft[16] = {
+	12, 13, 15, 17, 19, 20, 26, 31, 5,  0,  0,  0,  0,  0,  0,  0
+};
+
+const struct value_string osmo_amr_type_names[] = {
+	{ AMR_4_75,		"AMR 4,75 kbits/s" },
+	{ AMR_5_15,		"AMR 5,15 kbit/s" },
+	{ AMR_5_90,		"AMR 5,90 kbit/s" },
+	{ AMR_6_70,		"AMR 6,70 kbit/s (PDC-EFR)" },
+	{ AMR_7_40,		"AMR 7,40 kbit/s (TDMA-EFR)" },
+	{ AMR_7_95,		"AMR 7,95 kbit/s" },
+	{ AMR_10_2,		"AMR 10,2 kbit/s" },
+	{ AMR_12_2,		"AMR 12,2 kbit/s (GSM-EFR)" },
+	{ AMR_SID,		"AMR SID" },
+	{ AMR_GSM_EFR_SID,	"GSM-EFR SID" },
+	{ AMR_TDMA_EFR_SID,	"TDMA-EFR SID" },
+	{ AMR_PDC_EFR_SID,	"PDC-EFR SID" },
+	{ AMR_NO_DATA,		"No Data/NA" },
+	{ 0,			NULL },
+};
+
+/*! Decode various AMR parameters from RTP payload (RFC 4867) acording to
+ *         3GPP TS 26.101
+ *  \param[in] rtppayload Payload from RTP packet
+ *  \param[in] payload_len length of rtppayload
+ *  \param[out] cmr AMR Codec Mode Request, not filled if NULL
+ *  \param[out] cmi AMR Codec Mode Indicator, -1 if not applicable for this type,
+ *              not filled if NULL
+ *  \param[out] ft AMR Frame Type, not filled if NULL
+ *  \param[out] bfi AMR Bad Frame Indicator, not filled if NULL
+ *  \param[out] sti AMR SID Type Indicator, -1 if not applicable for this type,
+ *              not filled if NULL
+ *  \returns length of AMR data or negative value on error
+ */
+int osmo_amr_rtp_dec(const uint8_t *rtppayload, int payload_len, uint8_t *cmr,
+		     int8_t *cmi, enum osmo_amr_type *ft,
+		     enum osmo_amr_quality *bfi, int8_t *sti)
+{
+	if (payload_len < 2 || !rtppayload)
+		return -EINVAL;
+
+	/* RFC 4867 § 4.4.2 ToC - compound payloads are not supported: F = 0 */
+	uint8_t type = (rtppayload[1] >> 3) & 0xf;
+
+	/* compound payloads are not supported */
+	if (rtppayload[1] >> 7)
+		return -ENOTSUP;
+
+	if (payload_len < amr_len_by_ft[type])
+		return -ENOTSUP;
+
+	if (ft)
+		*ft = type;
+
+	if (cmr)
+		*cmr = rtppayload[0] >> 4;
+
+	if (bfi)
+		*bfi = (rtppayload[1] >> 2) & 1;
+
+	/* Table 6 in 3GPP TS 26.101 */
+	if (cmi)
+		*cmi = (type == AMR_SID) ? ((rtppayload[6] >> 1) & 7) : -1;
+
+	if (sti)
+		*sti = (type == AMR_SID) ? (rtppayload[6] & 0x10) : -1;
+
+	return 2 + amr_len_by_ft[type];
+}
+
+/*! Encode various AMR parameters from RTP payload (RFC 4867)
+ *  \param[out] payload Payload for RTP packet, contains speech data (if any)
+ *              except for have 2 first bytes where header will be built
+ *  \param[in] cmr AMR codec Mode Request
+ *  \param[in] ft AMR Frame Type
+ *  \param[in] bfi AMR Bad Frame Indicator
+ *  \returns length of AMR data (header + ToC + speech data) or negative value
+ *           on error
+ *
+ *  Note: only octet-aligned mode is supported so the header occupies 2 full
+ *  bytes. Optional interleaving header is not supported.
+ */
+int osmo_amr_rtp_enc(uint8_t *payload, uint8_t cmr, enum osmo_amr_type ft,
+		     enum osmo_amr_quality bfi)
+{
+	if (cmr > 15)
+		return -EINVAL;
+
+	if (ft > 15)
+		return -ENOTSUP;
+
+	/* RFC 4867 § 4.3.1 payload header */
+	payload[0] = cmr << 4;
+
+	/* RFC 4867 § 4.4.2 ToC - compound payloads are not supported: F = 0 */
+	payload[1] = (((uint8_t)ft) << 3) | (((uint8_t)bfi) << 2);
+
+	/* speech data */
+	return 2 + amr_len_by_ft[ft];
+}

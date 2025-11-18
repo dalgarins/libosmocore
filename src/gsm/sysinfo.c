@@ -1,9 +1,12 @@
-/* GSM 04.08 System Information (SI) encoding and decoding
+/*! \file sysinfo.c
+ * GSM 04.08 System Information (SI) encoding and decoding.
  * 3GPP TS 04.08 version 7.21.0 Release 1998 / ETSI TS 100 940 V7.21.0 */
-
-/* (C) 2008-2010 by Harald Welte <laforge@gnumonks.org>
+/*
+ * (C) 2008-2010 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -43,7 +46,7 @@ osmo_static_assert(sizeof(struct gsm48_system_information_type_4) == 13, _si4_si
 /* bs11 forgot the l2 len, 0-6 rest octets */
 osmo_static_assert(sizeof(struct gsm48_system_information_type_5) == 18, _si5_size);
 osmo_static_assert(sizeof(struct gsm48_system_information_type_6) == 11, _si6_size);
-
+osmo_static_assert(sizeof(struct gsm48_system_information_type_10) == 1, _si10_size);
 osmo_static_assert(sizeof(struct gsm48_system_information_type_13) == 3, _si13_size);
 
 static const uint8_t sitype2rsl[_MAX_SYSINFO_TYPE] = {
@@ -124,6 +127,95 @@ const struct value_string osmo_sitype_strs[_MAX_SYSINFO_TYPE] = {
 	{ SYSINFO_TYPE_MEAS_INFO, "MI" },
 	{ 0, NULL }
 };
+
+/*! Add pair of arfcn and measurement bandwith value to earfcn struct
+ *  \param[in,out] e earfcn struct
+ *  \param[in] arfcn EARFCN value, 16 bits
+ *  \param[in] meas_bw measurement bandwith value
+ *  \returns 0 on success, error otherwise
+ */
+int osmo_earfcn_add(struct osmo_earfcn_si2q *e, uint16_t arfcn, uint8_t meas_bw)
+{
+	size_t i;
+	for (i = 0; i < e->length; i++) {
+		if (OSMO_EARFCN_INVALID == e->arfcn[i]) {
+			e->arfcn[i] = arfcn;
+			e->meas_bw[i] = meas_bw;
+			return 0;
+		}
+	}
+	return -ENOMEM;
+}
+
+/*! Return number of bits necessary to represent earfcn struct as
+ *  Repeated E-UTRAN Neighbour Cells IE from 3GPP TS 44.018 Table 10.5.2.33b.1
+ *  \param[in,out] e earfcn struct
+ *  \returns number of bits
+ */
+size_t osmo_earfcn_bit_size(const struct osmo_earfcn_si2q *e)
+{
+	return osmo_earfcn_bit_size_ext(e, 0);
+}
+
+/*! Return number of bits necessary to represent earfcn struct as
+ *  Repeated E-UTRAN Neighbour Cells IE from 3GPP TS 44.018 Table 10.5.2.33b.1
+ *  \param[in,out] e earfcn struct
+ *  \param[in] offset into earfcn struct: how many EARFCNs to skip while estimating size
+ *  \returns number of bits
+ */
+size_t osmo_earfcn_bit_size_ext(const struct osmo_earfcn_si2q *e, size_t offset)
+{
+	/* 1 stop bit + 5 bits for THRESH_E-UTRAN_high */
+	size_t i, bits = 6, skip = 0;
+	for (i = 0; i < e->length; i++) {
+		if (e->arfcn[i] != OSMO_EARFCN_INVALID) {
+			if (skip < offset)
+				skip++;
+			else {
+				bits += 17;
+				if (OSMO_EARFCN_MEAS_INVALID == e->meas_bw[i])
+					bits++;
+				else
+					bits += 4;
+			}
+		}
+	}
+	bits += (e->prio_valid) ? 4 : 1;
+	bits += (e->thresh_lo_valid) ? 6 : 1;
+	bits += (e->qrxlm_valid) ? 6 : 1;
+	return bits;
+}
+
+/*! Delete arfcn (and corresponding measurement bandwith) from earfcn
+ *  struct
+ *  \param[in,out] e earfcn struct
+ *  \param[in] arfcn EARFCN value, 16 bits
+ *  \returns 0 on success, error otherwise
+ */
+int osmo_earfcn_del(struct osmo_earfcn_si2q *e, uint16_t arfcn)
+{
+	size_t i;
+	for (i = 0; i < e->length; i++) {
+		if (arfcn == e->arfcn[i]) {
+			e->arfcn[i] = OSMO_EARFCN_INVALID;
+			e->meas_bw[i] = OSMO_EARFCN_MEAS_INVALID;
+			return 0;
+		}
+	}
+	return -ENOENT;
+}
+
+/*! Initialize earfcn struct
+ *  \param[in,out] e earfcn struct
+ */
+void osmo_earfcn_init(struct osmo_earfcn_si2q *e)
+{
+	size_t i;
+	for (i = 0; i < e->length; i++) {
+		e->arfcn[i] = OSMO_EARFCN_INVALID;
+		e->meas_bw[i] = OSMO_EARFCN_MEAS_INVALID;
+	}
+}
 
 uint8_t osmo_sitype2rsl(enum osmo_sysinfo_type si_type)
 {

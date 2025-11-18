@@ -1,5 +1,6 @@
+/*! \file aes_i.h
+ * AES (Rijndael) cipher. */
 /*
- * AES (Rijndael) cipher
  * Copyright (c) 2003-2005, Jouni Malinen <j@w1.fi>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -8,6 +9,8 @@
  *
  * Alternatively, this software may be distributed under the terms of BSD
  * license.
+ *
+ * SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
  *
  * See README and COPYING for more details.
  */
@@ -66,7 +69,7 @@ extern const u8 rcons[10];
 
 #else /* AES_SMALL_TABLES */
 
-#define RCON(i) (rcons[(i)] << 24)
+#define RCON(i) ((u32)rcons[(i)] << 24)
 
 static inline u32 rotr(u32 val, int bits)
 {

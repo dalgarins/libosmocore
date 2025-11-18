@@ -1,24 +1,44 @@
-#pragma once
-
-/* GPRS Networks Service (NS) messages on the Gb interface
+/*! \file gsm_08_16.h
+ * GPRS Networks Service (NS) messages on the Gb interface.
  * 3GPP TS 08.16 version 8.0.1 Release 1999 / ETSI TS 101 299 V8.0.1 (2002-05)
  * 3GPP TS 48.016 version 6.5.0 Release 6 / ETSI TS 148 016 V6.5.0 (2005-11) */
 
+#pragma once
+
 #include <stdint.h>
+#include <arpa/inet.h>
+#include <osmocom/core/utils.h>
 
 /*! \addtogroup libgb
  *  @{
- */
+ * \file gprs_ns.h */
 
-/*! \file gprs_ns.h */
-
-/*! \brief Common header of GPRS NS */
+/*! Common header of GPRS NS */
 struct gprs_ns_hdr {
 	uint8_t pdu_type;	/*!< NS PDU type */
 	uint8_t data[0];	/*!< variable-length payload */
 } __attribute__((packed));
 
-/*! \brief NS PDU Type (TS 08.16, Section 10.3.7, Table 14) */
+
+/*! Section 10.3.2c List of IP4 Elements */
+struct gprs_ns_ie_ip4_elem {
+	uint32_t ip_addr;
+	uint16_t udp_port;
+	uint8_t sig_weight;
+	uint8_t data_weight;
+} __attribute__ ((packed));
+
+/*! Section 10.3.2d List of IP6 Elements */
+struct gprs_ns_ie_ip6_elem {
+	struct in6_addr ip_addr;
+	uint16_t udp_port;
+	uint8_t sig_weight;
+	uint8_t data_weight;
+} __attribute__ ((packed));
+
+extern const struct value_string gprs_ns_pdu_strings[];
+
+/*! NS PDU Type (TS 08.16, Section 10.3.7, Table 14) */
 enum ns_pdu_type {
 	NS_PDUT_UNITDATA	= 0x00,
 	NS_PDUT_RESET		= 0x02,
@@ -41,7 +61,7 @@ enum ns_pdu_type {
 	SNS_PDUT_SIZE_ACK	= 0x13,
 };
 
-/*! \brief NS Control IE (TS 08.16, Section 10.3, Table 12) */
+/*! NS Control IE (TS 08.16, Section 10.3, Table 12) */
 enum ns_ctrl_ie {
 	NS_IE_CAUSE		= 0x00,
 	NS_IE_VCI		= 0x01,
@@ -56,9 +76,10 @@ enum ns_ctrl_ie {
 	NS_IE_IPv6_EP_NR	= 0x09,
 	NS_IE_RESET_FLAG	= 0x0a,
 	NS_IE_IP_ADDR		= 0x0b,
+	NS_IE_TRANS_ID	 	= 0xff,	/* osmocom. Spec has this IE but without IEI! */
 };
 
-/*! \brief NS Cause (TS 08.16, Section 10.3.2, Table 13) */
+/*! NS Cause (TS 08.16, Section 10.3.2, Table 13) */
 enum ns_cause {
 	NS_CAUSE_TRANSIT_FAIL		= 0x00,
 	NS_CAUSE_OM_INTERVENTION	= 0x01,

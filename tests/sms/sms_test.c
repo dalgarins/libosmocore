@@ -13,10 +13,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <stdio.h>
@@ -219,7 +215,7 @@ static const struct test_case test_decode[] =
 	},
 };
 
-static void test_octet_return()
+static void test_octet_return(void)
 {
 	char out[256];
 	int oct, septets;
@@ -268,6 +264,54 @@ static void test_gen_oa(void)
 	printf("Result: len(%d) data(%s)\n", len, osmo_hexdump(oa, len));
 }
 
+static void test_enc_large_msg(void)
+{
+	uint8_t enc_buf[2048 * 7 / 8];
+	char large_msg[2048 + 1];
+	int i, j, nsep, noct = 0;
+
+	printf("\nRunning %s\n", __func__);
+
+	/* Expected chunks (repeated) in the output buffer */
+	const uint8_t exp_chunk[] = { 0xc1, 0x60, 0x30, 0x18, 0x0c, 0x06, 0x83 };
+
+	/* Length variants to be tested */
+	static const size_t nlen[] = { 2048, 1024, 555, 512, 260, 255, 250 };
+
+	memset(&large_msg[0], (int) 'A', sizeof(large_msg) - 1);
+
+	for (i = 0; i < ARRAY_SIZE(nlen); i++) {
+		/* Clear the output buffer first */
+		memset(&enc_buf[0], 0x00, sizeof(enc_buf));
+		/* Limit length of the input string */
+		large_msg[nlen[i]] = '\0';
+
+		/* How many octets we expect to be used? */
+		int noct_exp = nlen[i] * 7 / 8;
+		if (nlen[i] % 8 != 0)
+			noct_exp++;
+
+		/* Encode a sequence of 'A' repeated nlen[i] times */
+		nsep = gsm_7bit_encode_n(&enc_buf[0], sizeof(enc_buf), large_msg, &noct);
+		printf("gsm_7bit_encode_n(len=%zu) processed %d septets (expected %zu): %s\n",
+		       nlen[i], nsep, nlen[i], nsep == nlen[i] ? "OK" : "FAIL");
+		printf("gsm_7bit_encode_n(len=%zu) used %d octets in the buffer (expected %d): %s\n",
+		       nlen[i], noct, noct_exp, noct == noct_exp ? "OK" : "FAIL");
+
+		/* The encoding result is expected to consist of repeated chunks */
+		for (j = 0; j < noct_exp; j += sizeof(exp_chunk)) {
+			size_t len = OSMO_MIN(noct_exp - j, sizeof(exp_chunk));
+			if (nlen[i] % 8 != 0) /* skip incomplete octets */
+				len--;
+			if (memcmp(&enc_buf[j], exp_chunk, len) != 0) {
+				printf("\tUnexpected chunk at enc_buf[%d:%zu]: %s\n",
+				       j, len, osmo_hexdump(&enc_buf[j], len));
+				break; /* No need to show them all */
+			}
+		}
+	}
+}
+
 int main(int argc, char** argv)
 {
 	printf("SMS testing\n");
@@ -282,22 +326,13 @@ int main(int argc, char** argv)
 	uint8_t septet_data[256];
 	int nchars;
 	char result[256];
+	void *ctx = talloc_named_const(NULL, 0, "sms_test");
 
 	/* Fake logging. */
-	osmo_init_logging(&fake_log_info);
+	osmo_init_logging2(ctx, &fake_log_info);
 
 	/* test 7-bit encoding */
 	for (i = 0; i < ARRAY_SIZE(test_encode); ++i) {
-		/* Test legacy function (return value only) */
-		septet_length = gsm_7bit_encode(coded,
-						(const char *) test_encode[i].input);
-		printf("Legacy encode case %d: "
-		       "septet length %d (expected %d)\n"
-		       , i
-		       , septet_length, test_encode[i].expected_septet_length
-		      );
-		OSMO_ASSERT (septet_length == test_encode[i].expected_septet_length);
-
 		/* Test new function */
 		memset(coded, 0x42, sizeof(coded));
 		septet_length = gsm_7bit_encode_n(coded, sizeof(coded),
@@ -345,7 +380,7 @@ int main(int argc, char** argv)
 	memcpy(tmp, septet_data, concatenated_part1_septet_length);
 
 	/* In our case: test_multiple_decode[0].ud_hdr_ind equals number of padding bits*/
-	octet_length = gsm_septets2octets(coded, tmp, concatenated_part1_septet_length, test_multiple_encode[0].ud_hdr_ind);
+	octet_length = gsm_septet_pack(coded, tmp, concatenated_part1_septet_length, test_multiple_encode[0].ud_hdr_ind);
 
 	/* copy header */
 	memset(tmp, 0x42, sizeof(tmp));
@@ -363,7 +398,7 @@ int main(int argc, char** argv)
 	memcpy(tmp, septet_data + concatenated_part1_septet_length, concatenated_part2_septet_length);
 
 	/* In our case: test_multiple_decode[1].ud_hdr_ind equals number of padding bits*/
-	octet_length = gsm_septets2octets(coded, tmp, concatenated_part2_septet_length, test_multiple_encode[1].ud_hdr_ind);
+	octet_length = gsm_septet_pack(coded, tmp, concatenated_part2_septet_length, test_multiple_encode[1].ud_hdr_ind);
 
 	/* copy header */
 	memset(tmp, 0x42, sizeof(tmp));
@@ -377,20 +412,11 @@ int main(int argc, char** argv)
 
 	/* test 7-bit decoding */
 	for (i = 0; i < ARRAY_SIZE(test_decode); ++i) {
-		/* Test legacy function (return value only) */
-		if (!test_decode[i].ud_hdr_ind) {
-			nchars = gsm_7bit_decode(result, test_decode[i].input,
-						 test_decode[i].expected_septet_length);
-			printf("Legacy decode case %d: "
-			       "return value %d (expected %d)\n",
-			       i, nchars, test_decode[i].expected_septet_length);
-		}
-
 		/* Test new function */
 		memset(result, 0x42, sizeof(result));
 		nchars = gsm_7bit_decode_n_hdr(result, sizeof(result), test_decode[i].input,
 				test_decode[i].expected_septet_length, test_decode[i].ud_hdr_ind);
-		printf("Decode case %d: return value %d (expected %d)\n", i, nchars, strlen(result));
+		printf("Decode case %d: return value %d (expected %zu)\n", i, nchars, strlen(result));
 
 		OSMO_ASSERT(strcmp(result, (const char *) test_decode[i].expected) == 0);
 		OSMO_ASSERT(nchars == strlen(result));
@@ -414,6 +440,7 @@ int main(int argc, char** argv)
 
 	test_octet_return();
 	test_gen_oa();
+	test_enc_large_msg();
 
 	printf("OK\n");
 	return 0;

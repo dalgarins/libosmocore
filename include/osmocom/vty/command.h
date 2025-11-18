@@ -1,5 +1,6 @@
+/*! \file command.h
+ * Zebra configuration command interface routine. */
 /*
- * Zebra configuration command interface routine
  * Copyright (C) 1997, 98 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -16,122 +17,181 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with GNU Zebra; see the file COPYING.  If not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 02111-1307, USA.
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA  02110-1301, USA.
  */
 
 #pragma once
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <sys/types.h>
 #include "vector.h"
 
+#include <osmocom/core/defs.h>
+#include <osmocom/core/utils.h>
+
 /*! \defgroup command VTY Command
  *  @{
- */
-/*! \file command.h */
+ * \file command.h */
 
-/*! \brief Host configuration variable */
+/*! Host configuration variable */
 struct host {
-	/*! \brief Host name of this router. */
+	/*! Host name of this router. */
 	char *name;
 
-	/*! \brief Password for vty interface. */
+	/*! Password for vty interface. */
 	char *password;
 	char *password_encrypt;
 
-	/*! \brief Enable password */
+	/*! Enable password */
 	char *enable;
 	char *enable_encrypt;
 
-	/*! \brief System wide terminal lines. */
+	/*! System wide terminal lines. */
 	int lines;
 
-	/*! \brief Log filename. */
+	/*! Log filename. */
 	char *logfile;
 
-	/*! \brief config file name of this host */
+	/*! config file name of this host */
 	char *config;
 
-	/*! \brief Flags for services */
+	/*! Flags for services */
 	int advanced;
 	int encrypt;
 
-	/*! \brief Banner configuration. */
+	/*! Banner configuration. */
 	const char *motd;
 	char *motdfile;
 
-	/*! \brief VTY application information */
+	/*! VTY application information */
 	const struct vty_app_info *app_info;
 };
 
-/*! \brief There are some command levels which called from command node. */
+/*! There are some command levels which called from command node. */
 enum node_type {
-	AUTH_NODE,		/*!< \brief Authentication mode of vty interface. */
-	VIEW_NODE,		/*!< \brief View node. Default mode of vty interface. */
-	AUTH_ENABLE_NODE,	/*!< \brief Authentication mode for change enable. */
-	ENABLE_NODE,		/*!< \brief Enable node. */
-	CONFIG_NODE,		/*!< \brief Config node. Default mode of config file. */
-	SERVICE_NODE,		/*!< \brief Service node. */
-	DEBUG_NODE,		/*!< \brief Debug node. */
-	CFG_LOG_NODE,		/*!< \brief Configure the logging */
+	AUTH_NODE,		/*!< Authentication mode of vty interface. */
+	VIEW_NODE,		/*!< View node. Default mode of vty interface. */
+	AUTH_ENABLE_NODE,	/*!< Authentication mode for change enable. */
+	ENABLE_NODE,		/*!< Enable node. */
+	CONFIG_NODE,		/*!< Config node. Default mode of config file. */
+	SERVICE_NODE,		/*!< Service node. */
+	DEBUG_NODE,		/*!< Debug node. */
+	CFG_LOG_NODE,		/*!< Configure the logging */
+	CFG_STATS_NODE,		/*!< Configure the statistics */
 
-	VTY_NODE,		/*!< \brief Vty node. */
+	VTY_NODE,		/*!< Vty node. */
 
-	L_E1INP_NODE,		/*!< \brief E1 line in libosmo-abis. */
-	L_IPA_NODE,		/*!< \brief IPA proxying commands in libosmo-abis. */
-	L_NS_NODE,		/*!< \brief NS node in libosmo-gb. */
-	L_BSSGP_NODE,		/*!< \brief BSSGP node in libosmo-gb. */
+	L_E1INP_NODE,		/*!< E1 line in libosmo-abis. */
+	L_IPA_NODE,		/*!< IPA proxying commands in libosmo-abis. */
+	L_NS_NODE,		/*!< NS node in libosmo-gb. */
+	L_BSSGP_NODE,		/*!< BSSGP node in libosmo-gb. */
+	L_CTRL_NODE,		/*!< Control interface node. */
+
+	L_CS7_NODE,		/*!< SS7 root node */
+	L_CS7_AS_NODE,		/*!< SS7 Application Server */
+	L_CS7_ASP_NODE,		/*!< SS7 Application Server Process */
+	L_CS7_XUA_NODE,		/*!< SS7 xUA Listener */
+	L_CS7_RTABLE_NODE,	/*!< SS7 Routing Table */
+	L_CS7_LINK_NODE,	/*!< SS7 Link */
+	L_CS7_LINKSET_NODE,	/*!< SS7 Linkset */
+	L_CS7_SCCPADDR_NODE,	/*!< SS7 SCCP Address */
+	L_CS7_SCCPADDR_GT_NODE,	/*!< SS7 SCCP Global Title */
+
+	L_CPU_SCHED_NODE,	/*!< CPU Sched related options node */
+	L_NS_BIND_NODE,		/*!< NS bind node */
+	L_NS_NSE_NODE,		/*!< NS NSE node */
+	/*
+	 * When adding new nodes to the libosmocore project, these nodes can be
+	 * used to avoid ABI changes for unrelated projects.
+	 */
+	RESERVED1_NODE,		/*!< Reserved for later extensions */
+	RESERVED2_NODE,		/*!< Reserved for later extensions */
+	RESERVED3_NODE,		/*!< Reserved for later extensions */
+	RESERVED4_NODE,		/*!< Reserved for later extensions */
+	RESERVED5_NODE,		/*!< Reserved for later extensions */
+	RESERVED6_NODE,		/*!< Reserved for later extensions */
+	RESERVED7_NODE,		/*!< Reserved for later extensions */
+	RESERVED8_NODE,		/*!< Reserved for later extensions */
 
 	_LAST_OSMOVTY_NODE
 };
 
 #include "vty.h"
 
-/*! \brief Node which has some commands and prompt string and
+/*! Node which has some commands and prompt string and
  * configuration function pointer . */
 struct cmd_node {
-	/*! \brief Node index */
+	/*! Node index */
 	int node;
 
-	/*! \brief Prompt character at vty interface. */
+	/*! Prompt character at vty interface. */
 	const char *prompt;
 
-	/*! \brief Is this node's configuration goes to vtysh ? */
+	/*! Is this node's configuration goes to vtysh ? */
 	int vtysh;
 
-	/*! \brief Node's configuration write function */
+	/*! Node's configuration write function */
 	int (*func) (struct vty *);
 
-	/*! \brief Vector of this node's command list. */
+	/*! Vector of this node's command list. */
 	vector cmd_vector;
+
+	/*! Human-readable ID of this node. Should only contain alphanumeric
+	 * plus '-' and '_' characters (is used as XML ID for 'show
+	 * online-help'). If left NUL, this is derived from the prompt.*/
+	char name[64];
 };
 
+/*! Attributes (flags) for \ref cmd_element */
 enum {
-	CMD_ATTR_DEPRECATED = 1,
-	CMD_ATTR_HIDDEN,
+	CMD_ATTR_DEPRECATED	= (1 << 0),
+	CMD_ATTR_HIDDEN		= (1 << 1),
+	CMD_ATTR_IMMEDIATE	= (1 << 2),
+	CMD_ATTR_NODE_EXIT	= (1 << 3),
+	CMD_ATTR_LIB_COMMAND	= (1 << 4),
 };
 
-/*! \brief Structure of a command element */
+/*! Attributes shared between libraries (up to 32 entries). */
+enum {
+	/* The entries of this enum shall conform the following requirements:
+	 * 1. Naming format: 'OSMO_' + <LIBNAME> + '_LIB_ATTR_' + <ATTRNAME>,
+	 *    where LIBNAME is a short name of the library, e.g. 'ABIS', 'MGCP',
+	 *    and ATTRNAME is a brief name of the attribute, e.g. RTP_CONN_EST;
+	 *    for example: 'OSMO_ABIS_LIB_ATTR_RSL_LINK_UP'.
+	 * 2. Brevity: shortenings and abbreviations are welcome!
+	 * 3. Values are not flags but indexes, unlike CMD_ATTR_*.
+	 * 4. Ordering: new entries added before _OSMO_CORE_LIB_ATTR_COUNT. */
+	OSMO_SCCP_LIB_ATTR_RSTRT_ASP,
+	OSMO_ABIS_LIB_ATTR_IPA_NEW_LNK,
+	OSMO_ABIS_LIB_ATTR_LINE_UPD,
+
+	/* Keep this floating entry last, it's needed for count check. */
+	_OSMO_CORE_LIB_ATTR_COUNT
+};
+
+/*! Structure of a command element */
 struct cmd_element {
-	const char *string;	/*!< \brief Command specification by string. */
+	const char *string;	/*!< Command specification by string. */
 	int (*func) (struct cmd_element *, struct vty *, int, const char *[]);
-	const char *doc;	/*!< \brief Documentation of this command. */
-	int daemon;		/*!< \brief Daemon to which this command belong. */
-	vector strvec;		/*!< \brief Pointing out each description vector. */
-	unsigned int cmdsize;	/*!< \brief Command index count. */
-	char *config;		/*!< \brief Configuration string */
-	vector subconfig;	/*!< \brief Sub configuration string */
-	unsigned char attr;	/*!< \brief Command attributes */
+	const char *doc;	/*!< Documentation of this command. */
+	int daemon;		/*!< Daemon to which this command belong. */
+	vector strvec;		/*!< Pointing out each description vector. */
+	unsigned int cmdsize;	/*!< Command index count. */
+	char *config;		/*!< Configuration string */
+	vector subconfig;	/*!< Sub configuration string */
+	unsigned char attr;	/*!< Command attributes (global) */
+	unsigned int usrattr;	/*!< Command attributes (program specific) */
 };
 
-/*! \brief Command description structure. */
+/*! Command description structure. */
 struct desc {
-	const char *cmd;	/*!< \brief Command string. */
-	const char *str;	/*!< \brief Command's description. */
+	const char *cmd;	/*!< Command string. */
+	const char *str;	/*!< Command's description. */
 };
 
-/*! \brief Return value of the commands. */
+/*! Return value of the commands. */
 #define CMD_SUCCESS              0
 #define CMD_WARNING              1
 #define CMD_ERR_NO_MATCH         2
@@ -143,6 +203,7 @@ struct desc {
 #define CMD_COMPLETE_MATCH       8
 #define CMD_COMPLETE_LIST_MATCH  9
 #define CMD_SUCCESS_DAEMON      10
+#define CMD_ERR_INVALID_INDENT  11
 
 /* Argc max counts. */
 #define CMD_ARGC_MAX   256
@@ -157,8 +218,8 @@ struct desc {
     .string = cmdstr, \
     .func = funcname, \
     .doc = helpstr, \
-    .attr = attrs, \
     .daemon = dnum, \
+    .attr = attrs, \
   };
 
 /* global (non static) cmd_element */
@@ -168,8 +229,18 @@ struct desc {
     .string = cmdstr, \
     .func = funcname, \
     .doc = helpstr, \
-    .attr = attrs, \
     .daemon = dnum, \
+    .attr = attrs, \
+  };
+
+#define DEFUN_CMD_ELEMENT_ATTR_USRATTR(funcname, cmdname, cmdstr, helpstr, attrs, usrattrs) \
+  static struct cmd_element cmdname = \
+  { \
+    .string = cmdstr, \
+    .func = funcname, \
+    .doc = helpstr, \
+    .attr = attrs, \
+    .usrattr = usrattrs, \
   };
 
 #define DEFUN_CMD_FUNC_DECL(funcname) \
@@ -179,7 +250,7 @@ struct desc {
   static int funcname \
     (struct cmd_element *self, struct vty *vty, int argc, const char *argv[])
 
-/*! \brief Macro for defining a VTY node and function
+/*! Macro for defining a VTY node and function
  *  \param[in] funcname Name of the function implementing the node
  *  \param[in] cmdname Name of the command node
  *  \param[in] cmdstr String with syntax of node
@@ -190,7 +261,7 @@ struct desc {
   DEFUN_CMD_ELEMENT(funcname, cmdname, cmdstr, helpstr, 0, 0) \
   DEFUN_CMD_FUNC_TEXT(funcname)
 
-/*! \brief Macro for defining a non-static (global) VTY node and function
+/*! Macro for defining a non-static (global) VTY node and function
  *  \param[in] funcname Name of the function implementing the node
  *  \param[in] cmdname Name of the command node
  *  \param[in] cmdstr String with syntax of node
@@ -210,7 +281,23 @@ struct desc {
   DEFUN_ATTR (funcname, cmdname, cmdstr, helpstr, CMD_ATTR_HIDDEN)
 
 #define DEFUN_DEPRECATED(funcname, cmdname, cmdstr, helpstr) \
-  DEFUN_ATTR (funcname, cmdname, cmdstr, helpstr, CMD_ATTR_DEPRECATED) \
+  DEFUN_ATTR (funcname, cmdname, cmdstr, helpstr, CMD_ATTR_DEPRECATED)
+
+/*! Macro for defining a VTY node and function with global & program specific attributes.
+ *  \param[in] funcname Name of the function implementing the node.
+ *  \param[in] cmdname Name of the command node.
+ *  \param[in] attr Global attributes (see CMD_ATTR_*).
+ *  \param[in] usrattr Program specific attributes.
+ *  \param[in] cmdstr String with syntax of node.
+ *  \param[in] helpstr String with help message of node.
+ */
+#define DEFUN_ATTR_USRATTR(funcname, cmdname, attr, usrattr, cmdstr, helpstr) \
+  DEFUN_CMD_FUNC_DECL(funcname) \
+  DEFUN_CMD_ELEMENT_ATTR_USRATTR(funcname, cmdname, cmdstr, helpstr, attr, usrattr) \
+  DEFUN_CMD_FUNC_TEXT(funcname)
+
+#define DEFUN_USRATTR(funcname, cmdname, usrattr, cmdstr, helpstr) \
+  DEFUN_ATTR_USRATTR(funcname, cmdname, 0, usrattr, cmdstr, helpstr)
 
 /* DEFUN_NOSH for commands that vtysh should ignore */
 #define DEFUN_NOSH(funcname, cmdname, cmdstr, helpstr) \
@@ -277,6 +364,10 @@ struct desc {
 #define CMD_IPV6(S)        ((strcmp ((S), "X:X::X:X") == 0))
 #define CMD_IPV6_PREFIX(S) ((strcmp ((S), "X:X::X:X/M") == 0))
 
+#define VTY_IPV4_CMD "A.B.C.D"
+#define VTY_IPV6_CMD "X:X::X:X"
+#define VTY_IPV46_CMD "(" VTY_IPV4_CMD "|" VTY_IPV6_CMD ")"
+
 /* Common descriptions. */
 #define SHOW_STR "Show running system information\n"
 #define IP_STR "IP information\n"
@@ -334,15 +425,14 @@ struct desc {
 
 /* Prototypes. */
 void install_node(struct cmd_node *, int (*)(struct vty *));
-void install_default(int node_type);
+void install_default(int node_type) OSMO_DEPRECATED("Now happens implicitly with install_node()");
 void install_element(int node_type, struct cmd_element *);
+void install_lib_element(int node_type, struct cmd_element *);
 void install_element_ve(struct cmd_element *cmd);
+void install_lib_element_ve(struct cmd_element *cmd);
 void sort_node(void);
 
-/* This is similar to install_default() but it also creates
- * 'exit' and 'end' commands.
- */
-void vty_install_default(int node_type);
+void vty_install_default(int node_type) OSMO_DEPRECATED("Now happens implicitly with install_node()");
 
 /* Concatenates argv[shift] through argv[argc-1] into a single NUL-terminated
    string with a space between each element (allocated using
@@ -350,9 +440,10 @@ void vty_install_default(int node_type);
 char *argv_concat(const char **argv, int argc, int shift);
 
 vector cmd_make_strvec(const char *);
+int cmd_make_strvec2(const char *string, char **indent, vector *strvec_p);
 void cmd_free_strvec(vector);
-vector cmd_describe_command();
-char **cmd_complete_command();
+vector cmd_describe_command(vector vline, struct vty *vty, int *status);
+char **cmd_complete_command(vector vline, struct vty *vty, int *status);
 const char *cmd_prompt(enum node_type);
 int config_from_file(struct vty *, FILE *);
 enum node_type node_parent(enum node_type);
@@ -366,12 +457,32 @@ extern struct cmd_element config_exit_cmd;
 extern struct cmd_element config_help_cmd;
 extern struct cmd_element config_list_cmd;
 extern struct cmd_element config_end_cmd;
-char *host_config_file();
+const char *host_config_file(void);
 void host_config_set(const char *);
+
+char *osmo_asciidoc_escape(const char *inp);
 
 /* This is called from main when a daemon is invoked with -v or --version. */
 void print_version(int print_copyright);
 
 extern void *tall_vty_cmd_ctx;
+
+/*! VTY reference generation mode. */
+enum vty_ref_gen_mode {
+	/*! Default mode: all commands except deprecated and hidden. */
+	VTY_REF_GEN_MODE_DEFAULT = 0,
+	/*! Expert mode: all commands including hidden, excluding deprecated. */
+	VTY_REF_GEN_MODE_EXPERT,
+	/*! "Inverse" mode: only hidden commands. */
+	VTY_REF_GEN_MODE_HIDDEN,
+};
+
+extern const struct value_string vty_ref_gen_mode_names[];
+extern const struct value_string vty_ref_gen_mode_desc[];
+
+int vty_dump_xml_ref_mode(FILE *stream, enum vty_ref_gen_mode mode);
+int vty_dump_xml_ref(FILE *stream) OSMO_DEPRECATED("Use vty_dump_xml_ref_mode() instead");
+
+int vty_cmd_range_match(const char *range, const char *str);
 
 /*! @} */

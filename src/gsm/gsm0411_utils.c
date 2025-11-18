@@ -1,14 +1,16 @@
-/* Point-to-Point (PP) Short Message Service (SMS)
+/* Point-to-Point (PP) Short Message Service (SMS).
  * Support on Mobile Radio Interface
- * 3GPP TS 04.11 version 7.1.0 Release 1998 / ETSI TS 100 942 V7.1.0 */
-
-/* (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
+ * 3GPP TS 04.11 version 7.1.0 Release 1998 / ETSI TS 100 942 V7.1.0. */
+/*
+ * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009 by Harald Welte <laforge@gnumonks.org>
  * (C) 2010-2013 by Holger Hans Peter Freyther <zecke@selfish.org>
  * (C) 2010 by On-Waves
  * (C) 2011 by Andreas Eversberg <jolly@eversberg.eu>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +27,7 @@
  *
  */
 
-#include "../../config.h"
+#include "config.h"
 
 #include <time.h>
 #include <string.h>
@@ -37,16 +39,25 @@
 #include <osmocom/gsm/protocol/gsm_03_40.h>
 #include <osmocom/gsm/protocol/gsm_04_11.h>
 
+/*! \addtogroup sms
+ *  @{
+ *  \file gsm0411_utils.c
+ */
+
 #define GSM411_ALLOC_SIZE	1024
 #define GSM411_ALLOC_HEADROOM	128
 
+/*! Allocate a message buffer for use as TS 04.11 message
+ *  \returns allocated message buffer */
 struct msgb *gsm411_msgb_alloc(void)
 {
 	return msgb_alloc_headroom(GSM411_ALLOC_SIZE, GSM411_ALLOC_HEADROOM,
 				   "GSM 04.11");
 }
 
-/* Turn int into semi-octet representation: 98 => 0x89 */
+/*! Turn int into semi-octet representation: 98 => 0x89
+ *  \param[in] integer value representing decimal number 0..99
+ *  \returns BSC encoded as nibbles, swapped */
 uint8_t gsm411_bcdify(uint8_t value)
 {
 	uint8_t ret;
@@ -57,7 +68,9 @@ uint8_t gsm411_bcdify(uint8_t value)
 	return ret;
 }
 
-/* Turn semi-octet representation into int: 0x89 => 98 */
+/*! Turn semi-octet representation into int: 0x89 => 98
+ *  \param[in] value byte containing two BCD nibbles in revere order
+ *  \returns integer representing decoded, re-ordered nibbles */
 uint8_t gsm411_unbcdify(uint8_t value)
 {
 	uint8_t ret;
@@ -72,10 +85,12 @@ uint8_t gsm411_unbcdify(uint8_t value)
 	return ret;
 }
 
-/* Generate 03.40 TP-SCTS */
+/*! Generate 03.40 TP-SCTS
+ *  \param[out] scts Caller-provided buffer to store SCTS (7 octets)
+ *  \param[in] time to encode */
 void gsm340_gen_scts(uint8_t *scts, time_t time)
 {
-	struct tm *tm = gmtime(&time);
+	struct tm *tm = localtime(&time);
 
 	*scts++ = gsm411_bcdify(tm->tm_year % 100);
 	*scts++ = gsm411_bcdify(tm->tm_mon + 1);
@@ -86,12 +101,14 @@ void gsm340_gen_scts(uint8_t *scts, time_t time)
 #ifdef HAVE_TM_GMTOFF_IN_TM
 	*scts++ = gsm411_bcdify(tm->tm_gmtoff/(60*15));
 #else
-#warning find a portable way to obtain timezone offset
+#pragma message ("find a portable way to obtain timezone offset")
 	*scts++ = 0;
 #endif
 }
 
-/* Decode 03.40 TP-SCTS (into utc/gmt timestamp) */
+/*! Decode 03.40 TP-SCTS (into utc/gmt timestamp)
+ *  \param[in] scts SMS Center Time Stamp
+ *  \return time in UTC time_t format */
 time_t gsm340_scts(uint8_t *scts)
 {
 	struct tm tm;
@@ -189,7 +206,10 @@ static unsigned long gsm340_vp_relative_semioctet(uint8_t *sms_vp)
 	return minutes;
 }
 
-/* decode validity period. return minutes */
+/*! decode validity period. return minutes
+ *  \param[in] sms_vpf Validity Period Format in 03.40 encoding
+ *  \param[in] sms_vp Validity Period Information Element
+ *  \returns validity period in minutes */
 unsigned long gsm340_validity_period(uint8_t sms_vpf, uint8_t *sms_vp)
 {
 	uint8_t fi; /* functionality indicator */
@@ -227,7 +247,9 @@ unsigned long gsm340_validity_period(uint8_t sms_vpf, uint8_t *sms_vp)
 	}
 }
 
-/* determine coding alphabet dependent on GSM 03.38 Section 4 DCS */
+/*! determine coding alphabet dependent on GSM 03.38 Section 4 DCS
+ *  \param[in] dcs Data Coding Scheme in 03.38 encoding
+ *  \returns libosmogsm internal enum \ref sms_alphabet */
 enum sms_alphabet gsm338_get_sms_alphabet(uint8_t dcs)
 {
 	uint8_t cgbits = dcs >> 4;
@@ -237,7 +259,7 @@ enum sms_alphabet gsm338_get_sms_alphabet(uint8_t dcs)
 		if (cgbits & 2) {
 			LOGP(DLSMS, LOGL_NOTICE,
 			     "Compressed SMS not supported yet\n");
-			return 0xffffffff;
+			return -1;
 		}
 
 		switch ((dcs >> 2)&0x03) {
@@ -265,7 +287,13 @@ enum sms_alphabet gsm338_get_sms_alphabet(uint8_t dcs)
 	return alpha;
 }
 
-/* generate a TPDU address field compliant with 03.40 sec. 9.1.2.5 */
+/*! generate a TPDU address field compliant with 03.40 sec. 9.1.2.5 
+ *  \param[out] oa caller-provided output buffer
+ *  \param[in] oa_len caller-specified length of \a oa in bytes
+ *  \param[in] type GSM340_TYPE_*
+ *  \param[in] plan Numbering Plan
+ *  \param[in] number string containing number
+ *  \returns number of bytes of \a oa that have been used */
 int gsm340_gen_oa(uint8_t *oa, unsigned int oa_len, uint8_t type,
 	uint8_t plan, const char *number)
 {
@@ -295,7 +323,11 @@ int gsm340_gen_oa(uint8_t *oa, unsigned int oa_len, uint8_t type,
 	return len_in_bytes;
 }
 
-/* Prefix msg with a RP header */
+/*! Prefix \ref msgb with a RP header
+ *  \param msg Message Buffer containing message
+ *  \param[in] rp_msg_type RP Message Type
+ *  \param[in] rp_msg_ref RP Message Reference
+ *  \returns 0 */
 int gsm411_push_rp_header(struct msgb *msg, uint8_t rp_msg_type,
 	uint8_t rp_msg_ref)
 {
@@ -311,16 +343,18 @@ int gsm411_push_rp_header(struct msgb *msg, uint8_t rp_msg_type,
 	return 0;
 }
 
-/* Prefix msg with a 04.08/04.11 CP header */
+/*! Prefix \ref msgb with a 04.08/04.11 CP header
+ *  \param msg Message Buffer containing message
+ *  \param[in] proto Protocol
+ *  \param[in] trans Transaction
+ *  \param[in] msg_type Message Type
+ *  \returns 0 */
 int gsm411_push_cp_header(struct msgb *msg, uint8_t proto, uint8_t trans,
 			     uint8_t msg_type)
 {
-	struct gsm48_hdr *gh;
-
-	gh = (struct gsm48_hdr *) msgb_push(msg, sizeof(*gh));
-	/* Outgoing needs the highest bit set */
-	gh->proto_discr = proto | (trans << 4);
-	gh->msg_type = msg_type;
-
+	/* Outgoing proto_discr needs the highest bit set */
+	gsm48_push_l3hdr_tid(msg, proto, trans, msg_type);
 	return 0;
 }
+
+/*! @} */

@@ -1,3 +1,5 @@
+/*! \file mncc.h */
+
 #pragma once
 
 #include <osmocom/gsm/protocol/gsm_04_08.h>
@@ -8,12 +10,12 @@
 
 /* Expanded fields from GSM TS 04.08, Table 10.5.102 */
 struct gsm_mncc_bearer_cap {
-	int		transfer;	/* Information Transfer Capability */
-	int 		mode;		/* Transfer Mode */
-	int		coding;		/* Coding Standard */
-	int		radio;		/* Radio Channel Requirement */
+	int		transfer;	/* Information Transfer Capability, see enum gsm48_bcap_itcap. */
+	int 		mode;		/* Transfer Mode, see enum gsm48_bcap_tmod. */
+	int		coding;		/* Coding Standard, see enum gsm48_bcap_coding.*/
+	int		radio;		/* Radio Channel Requirement, see enum gsm48_bcap_rrq. */
 	int		speech_ctm;	/* CTM text telephony indication */
-	int		speech_ver[8];	/* Speech version indication */
+	int		speech_ver[8];	/* Speech version indication, see enum gsm48_bcap_speech_ver; -1 marks end */
 	struct {
 		enum gsm48_bcap_ra		rate_adaption;
 		enum gsm48_bcap_sig_access	sig_access;
@@ -80,3 +82,17 @@ enum {
 	GSM_MNCC_BCAP_OTHER_ITC = 5,
 	GSM_MNCC_BCAP_RESERVED	= 7,
 };
+
+struct msgb;
+struct msgb *osmo_mncc_stringify(const uint8_t *msg, unsigned int len);
+
+void _osmo_mncc_log(int subsys, int level, const char *file, int line, const char *prefix,
+		    const uint8_t *msg, unsigned int len);
+
+#define osmo_mncc_log(ss, level, prefix, msg, len)	\
+	_osmo_mncc_log(ss, level, __FILE__, __LINE__, prefix, msg, len);
+
+extern const struct value_string osmo_mncc_names[];
+static inline const char *osmo_mncc_name(uint32_t msg_type) {
+	return get_value_string(osmo_mncc_names, msg_type);
+}

@@ -1,14 +1,16 @@
-/* Point-to-Point (PP) Short Message Service (SMS)
+/* Point-to-Point (PP) Short Message Service (SMS).
  * Support on Mobile Radio Interface
  * 3GPP TS 04.11 version 7.1.0 Release 1998 / ETSI TS 100 942 V7.1.0 */
-
-/* (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
+/*
+ * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009 by Harald Welte <laforge@gnumonks.org>
  * (C) 2010 by Holger Hans Peter Freyther <zecke@selfish.org>
  * (C) 2010 by On-Waves
  * (C) 2011 by Andreas Eversberg <jolly@eversberg.eu>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,9 +49,10 @@
  */
 
 
+#include <sys/types.h>
+#include <inttypes.h>
 #include <string.h>
 #include <errno.h>
-#include <inttypes.h>
 #include <osmocom/core/msgb.h>
 #include <osmocom/core/logging.h>
 #include <osmocom/core/timer.h>
@@ -61,6 +64,11 @@
 #include <osmocom/gsm/protocol/gsm_04_08.h>
 
 #define SMR_LOG_STR "SMR(%" PRIu64 ") "
+
+/*! \addtogroup sms
+ *  @{
+ *  \file gsm0411_smr.c
+ */
 
 static void rp_timer_expired(void *data);
 
@@ -77,8 +85,7 @@ void gsm411_smr_init(struct gsm411_smr_inst *inst, uint64_t id, int network,
 	inst->rp_state = GSM411_RPS_IDLE;
 	inst->rl_recv = rl_recv;
 	inst->mn_send = mn_send;
-	inst->rp_timer.data = inst;
-	inst->rp_timer.cb = rp_timer_expired;
+	osmo_timer_setup(&inst->rp_timer, rp_timer_expired, inst);
 
 	LOGP(DLSMS, LOGL_INFO,
 		SMR_LOG_STR "instance created for %s.\n",
@@ -124,7 +131,7 @@ const struct value_string gsm411_rp_cause_strs[] = {
 	{ GSM411_RP_CAUSE_INV_TRANS_REF, "Invalid Transaction Reference" },
 	{ GSM411_RP_CAUSE_SEMANT_INC_MSG, "Semantically Incorrect Message" },
 	{ GSM411_RP_CAUSE_INV_MAND_INF, "Invalid Mandatory Information" },
-	{ GSM411_RP_CAUSE_MSGTYPE_NOTEXIST, "Message Type non-existant" },
+	{ GSM411_RP_CAUSE_MSGTYPE_NOTEXIST, "Message Type non-existent" },
 	{ GSM411_RP_CAUSE_MSG_INCOMP_STATE, "Message incompatible with protocol state" },
 	{ GSM411_RP_CAUSE_IE_NOTEXIST, "Information Element not existing" },
 	{ GSM411_RP_CAUSE_PROTOCOL_ERR, "Protocol Error" },
@@ -288,7 +295,6 @@ static int gsm411_mnsms_data_ind_tx(struct gsm411_smr_inst *inst,
 	struct gsm48_hdr *gh = (struct gsm48_hdr*)msg->l3h;
 	struct gsm411_rp_hdr *rp_data = (struct gsm411_rp_hdr*)&gh->data;
 	uint8_t msg_type =  rp_data->msg_type & 0x07;
-	int rc;
 
 	/* check direction */
 	if (inst->network == (msg_type & 1)) {
@@ -330,7 +336,7 @@ static int gsm411_mnsms_data_ind_tx(struct gsm411_smr_inst *inst,
 		return -EINVAL;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int gsm411_mnsms_error_ind_tx(struct gsm411_smr_inst *inst,
@@ -486,3 +492,12 @@ int gsm411_smr_recv(struct gsm411_smr_inst *inst, int msg_type,
 
 	return rc;
 }
+
+const struct value_string gsm411_rp_state_names[] = {
+	{ GSM411_RPS_IDLE,		"IDLE" },
+	{ GSM411_RPS_WAIT_FOR_RP_ACK,	"WAIT_FOR_RP_ACK" },
+	{ GSM411_RPS_WAIT_TO_TX_RP_ACK,	"WAIT_TO_TX_RP_ACK" },
+	{ GSM411_RPS_WAIT_FOR_RETRANS_T,"WAIT_FOR_RETRANS_T" },
+	{ 0, NULL }
+};
+/*! @} */

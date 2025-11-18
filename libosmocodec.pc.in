@@ -6,6 +6,6 @@ includedir=@includedir@
 Name: Osmocom Codec related utilities Library
 Description: C Utility Library
 Version: @VERSION@
+Requires: talloc, libosmocore
 Libs: -L${libdir} -losmocodec
 Cflags: -I${includedir}/
-

@@ -1,8 +1,11 @@
-/* PC/SC Card reader backend for libosmosim */
+/*! \file reader_pcsc.c
+ * PC/SC Card reader backend for libosmosim. */
 /*
  * (C) 2012 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -38,10 +37,7 @@
 if (rv != SCARD_S_SUCCESS) { \
 	fprintf(stderr, text ": %s (0x%lX)\n", pcsc_stringify_error(rv), rv); \
 	goto end; \
-} else { \
-        printf(text ": OK\n\n"); \
 }
-
 
 
 struct pcsc_reader_state {
@@ -52,6 +48,27 @@ struct pcsc_reader_state {
 	SCARD_IO_REQUEST pioRecvPci;
 	char *name;
 };
+
+static int pcsc_get_atr(struct osim_card_hdl *card)
+{
+	struct osim_reader_hdl *rh = card->reader;
+	struct pcsc_reader_state *st = rh->priv;
+	char pbReader[MAX_READERNAME];
+	DWORD dwReaderLen = sizeof(pbReader);
+	DWORD dwAtrLen = sizeof(card->atr);
+	DWORD dwState, dwProt;
+	long rc;
+
+	rc = SCardStatus(st->hCard, pbReader, &dwReaderLen, &dwState, &dwProt,
+			 card->atr, &dwAtrLen);
+	PCSC_ERROR(rc, "SCardStatus");
+	card->atr_len = dwAtrLen;
+
+	return 0;
+
+end:
+	return -EIO;
+}
 
 static struct osim_reader_hdl *pcsc_reader_open(int num, const char *id, void *ctx)
 {
@@ -76,18 +93,22 @@ static struct osim_reader_hdl *pcsc_reader_open(int num, const char *id, void *c
 	rc = SCardListReaders(st->hContext, NULL, (LPSTR)&mszReaders, &dwReaders);
 	PCSC_ERROR(rc, "SCardListReaders");
 
+	/* SCARD_S_SUCCESS means there is at least one reader in the group */
 	num_readers = 0;
 	ptr = mszReaders;
-	while (*ptr != '\0') {
+	while (*ptr != '\0' && num_readers != num) {
 		ptr += strlen(ptr)+1;
 		num_readers++;
 	}
 
-	if (num_readers == 0)
+	if (num != num_readers) {
+		SCardFreeMemory(st->hContext, mszReaders);
 		goto end;
+	}
 
-	st->name = talloc_strdup(rh, mszReaders);
+	st->name = talloc_strdup(rh, ptr);
 	st->dwActiveProtocol = -1;
+	SCardFreeMemory(st->hContext, mszReaders);
 
 	return rh;
 end:
@@ -114,6 +135,7 @@ static struct osim_card_hdl *pcsc_card_open(struct osim_reader_hdl *rh,
 
 	card = talloc_zero(rh, struct osim_card_hdl);
 	INIT_LLIST_HEAD(&card->channels);
+	INIT_LLIST_HEAD(&card->apps);
 	card->reader = rh;
 	rh->card = card;
 
@@ -122,10 +144,40 @@ static struct osim_card_hdl *pcsc_card_open(struct osim_reader_hdl *rh,
 	chan->card = card;
 	llist_add(&chan->list, &card->channels);
 
+	pcsc_get_atr(card);
+
 	return card;
 
 end:
 	return NULL;
+}
+
+static int pcsc_card_reset(struct osim_card_hdl *card, bool cold_reset)
+{
+	struct pcsc_reader_state *st = card->reader->priv;
+	LONG rc;
+
+	rc = SCardReconnect(st->hCard, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0,
+			    cold_reset ? SCARD_UNPOWER_CARD : SCARD_RESET_CARD,
+			    &st->dwActiveProtocol);
+	PCSC_ERROR(rc, "SCardReconnect");
+
+	return 0;
+end:
+	return -EIO;
+}
+
+static int pcsc_card_close(struct osim_card_hdl *card)
+{
+	struct pcsc_reader_state *st = card->reader->priv;
+	LONG rc;
+
+	rc = SCardDisconnect(st->hCard, SCARD_UNPOWER_CARD);
+	PCSC_ERROR(rc, "SCardDisconnect");
+
+	return 0;
+end:
+	return -EIO;
 }
 
 
@@ -135,13 +187,10 @@ static int pcsc_transceive(struct osim_reader_hdl *rh, struct msgb *msg)
 	DWORD rlen = msgb_tailroom(msg);
 	LONG rc;
 
-	printf("TX: %s\n", osmo_hexdump(msg->data, msg->len));
-
 	rc = SCardTransmit(st->hCard, st->pioSendPci, msg->data, msgb_length(msg),
 			   &st->pioRecvPci, msg->tail, &rlen);
 	PCSC_ERROR(rc, "SCardEndTransaction");
 
-	printf("RX: %s\n", osmo_hexdump(msg->tail, rlen));
 	msgb_put(msg, rlen);
 	msgb_apdu_le(msg) = rlen;
 
@@ -154,6 +203,8 @@ const struct osim_reader_ops pcsc_reader_ops = {
 	.name = "PC/SC",
 	.reader_open = pcsc_reader_open,
 	.card_open = pcsc_card_open,
+	.card_reset = pcsc_card_reset,
+	.card_close = pcsc_card_close,
 	.transceive = pcsc_transceive,
 };
 

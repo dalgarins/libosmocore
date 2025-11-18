@@ -17,49 +17,54 @@
 
 static unsigned long in_ctr = 1;
 static struct timeval tv_start;
+void *ctx = NULL;
 
 int get_centisec_diff(void)
 {
 	struct timeval tv;
 	struct timeval now;
-	gettimeofday(&now, NULL);
+	osmo_gettimeofday(&now, NULL);
 
 	timersub(&now, &tv_start, &tv);
 
 	return tv.tv_sec * 100 + tv.tv_usec/10000;
 }
 
-/* round to deciseconds to make sure test output is always consistent */
-int round_decisec(int csec_in)
-{
-	int tmp = csec_in / 10;
-
-	return tmp * 10;
-}
-
 static int fc_out_cb(struct bssgp_flow_control *fc, struct msgb *msg,
 		     uint32_t llc_pdu_len, void *priv)
 {
 	unsigned int csecs = get_centisec_diff();
-	csecs = round_decisec(csecs);
 
 	printf("%u: FC OUT Nr %lu\n", csecs, (unsigned long) msg->cb[0]);
 	msgb_free(msg);
 	return 0;
 }
 
-static int fc_in(struct bssgp_flow_control *fc, unsigned int pdu_len)
+static void fc_in(struct bssgp_flow_control *fc, unsigned int pdu_len)
 {
 	struct msgb *msg;
 	unsigned int csecs = get_centisec_diff();
-	csecs = round_decisec(csecs);
+	int rc;
 
 	msg = msgb_alloc(1, "fc test");
 	msg->cb[0] = in_ctr++;
 
 	printf("%u: FC IN Nr %lu\n", csecs, msg->cb[0]);
-	bssgp_fc_in(fc, msg, pdu_len, NULL);
-	return 0;
+	rc = bssgp_fc_in(fc, msg, pdu_len, NULL);
+	switch (rc) {
+	case 0:
+		printf(" -> %d: ok\n", rc);
+		break;
+	case -ENOSPC:
+		printf(" -> %d: queue full, msg dropped.\n", rc);
+		break;
+	case -EIO:
+		printf(" -> %d: PDU too large, msg dropped.\n", rc);
+		break;
+	default:
+		printf(" -> %d: error, msg dropped.\n", rc);
+		break;
+	}
 }
 
 
@@ -67,14 +72,22 @@ static void test_fc(uint32_t bucket_size_max, uint32_t bucket_leak_rate,
 		    uint32_t max_queue_depth, uint32_t pdu_len,
 		    uint32_t pdu_count)
 {
-	struct bssgp_flow_control *fc = talloc_zero(NULL, struct bssgp_flow_control);
+	struct bssgp_flow_control *fc = talloc_zero(ctx, struct bssgp_flow_control);
 	int i;
+
+	osmo_gettimeofday_override_time = (struct timeval){
+		.tv_sec = 1486385000,
+		.tv_usec = 423423,
+	};
+	osmo_gettimeofday_override = true;
 
 	bssgp_fc_init(fc, bucket_size_max, bucket_leak_rate, max_queue_depth,
 		      fc_out_cb);
 
-	gettimeofday(&tv_start, NULL);
+	osmo_gettimeofday(&tv_start, NULL);
 
+	/* Fill the queue with PDUs, possibly beyond the queue being full. If it is full, additional PDUs
+	 * are discarded. */
 	for (i = 0; i < pdu_count; i++) {
 		fc_in(fc, pdu_len);
 		osmo_timers_check();
@@ -83,7 +96,8 @@ static void test_fc(uint32_t bucket_size_max, uint32_t bucket_leak_rate,
 	}
 
 	while (1) {
-		usleep(100000);
+		osmo_gettimeofday_override_add(0, 100000);
+
 		osmo_timers_check();
 		osmo_timers_prepare();
 		osmo_timers_update();
@@ -91,6 +105,8 @@ static void test_fc(uint32_t bucket_size_max, uint32_t bucket_leak_rate,
 		if (llist_empty(&fc->queue))
 			break;
 	}
+
+	talloc_free(fc);
 }
 
 static void help(void)
@@ -117,6 +133,8 @@ int main(int argc, char **argv)
 	uint32_t pdu_length = 10; /* octets */
 	uint32_t pdu_count = 20; /* messages */
 	int c;
+	void *tall_msgb_ctx;
+	ctx = talloc_named_const(NULL, 0, "bssgp_fc_test");
 
 	static const struct option long_options[] = {
 		{ "bucket-size-max", 1, 0, 's' },
@@ -128,9 +146,13 @@ int main(int argc, char **argv)
 		{ 0, 0, 0, 0 }
 	};
 
-	osmo_init_logging(&info);
+	osmo_init_logging2(ctx, &info);
 	log_set_use_color(osmo_stderr_target, 0);
-	log_set_print_filename(osmo_stderr_target, 0);
+	log_set_print_filename2(osmo_stderr_target, LOG_FILENAME_NONE);
+	log_set_print_category(osmo_stderr_target, 0);
+	log_set_print_category_hex(osmo_stderr_target, 0);
+
+	tall_msgb_ctx = msgb_talloc_ctx_init(ctx, 0);
 
 	while ((c = getopt_long(argc, argv, "s:r:d:l:c:",
 				long_options, NULL)) != -1) {
@@ -171,6 +193,12 @@ int main(int argc, char **argv)
 		bucket_leak_rate, max_queue_depth, pdu_length, pdu_count);
 	test_fc(bucket_size_max, bucket_leak_rate, max_queue_depth,
 		pdu_length, pdu_count);
+	printf("msgb ctx: %zu b in %zu blocks (0 b in 1 block == just the context)\n",
+	       talloc_total_size(tall_msgb_ctx),
+	       talloc_total_blocks(tall_msgb_ctx));
+	OSMO_ASSERT(talloc_total_size(tall_msgb_ctx) == 0);
+	OSMO_ASSERT(talloc_total_blocks(tall_msgb_ctx) == 1);
+	talloc_free(tall_msgb_ctx);
 	printf("===== BSSGP flow-control test END\n\n");
 
 	exit(EXIT_SUCCESS);

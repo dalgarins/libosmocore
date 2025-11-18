@@ -1,8 +1,11 @@
-/* TETRA SIM card specific structures/routines */
+/*! \file card_fs_tetra.c
+ * TETRA SIM card specific structures/routines. */
 /*
  * (C) 2014 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -43,7 +42,7 @@ static const struct osim_card_sw tsim_sw[] = {
 		.u.str = "SIM Application Toolkit is busy, command cannot be executed at present",
 	}, {
 		0x9200, 0xfff0, SW_TYPE_STR, SW_CLS_WARN,
-		.u.str = "Memory management - Command successful but after using an internal updat retry X times",
+		.u.str = "Memory management - Command successful but after using an internal update retry X times",
 	}, {
 		0x9240, 0xffff, SW_TYPE_STR, SW_CLS_ERROR,
 		.u.str = "Memory management - Memory problem",
@@ -204,7 +203,7 @@ static const struct osim_file_desc sim_ef_in_tetra[] = {
 	EF_LIN_FIX_N(0x6F2B, SFI_NONE, "EF.MSGEXT", F_OPTIONAL, 16, 16,
 		"Message Extension"),
 	EF_LIN_FIX_N(0x6F2C, SFI_NONE, "EF.EADDR", 0, 17, 17,
-		"Emergency adresses"),
+		"Emergency addresses"),
 	EF_TRANSP_N(0x6F2D, SFI_NONE, "EF.EINFO", 0, 2, 2,
 		"Emergency call information"),
 	EF_LIN_FIX_N(0x6F2E, SFI_NONE, "EF.DMOCh", F_OPTIONAL, 4, 4,

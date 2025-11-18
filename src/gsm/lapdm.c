@@ -1,9 +1,13 @@
-/* GSM LAPDm (TS 04.06) implementation */
-
-/* (C) 2010-2011 by Harald Welte <laforge@gnumonks.org>
+/*! \file lapdm.c
+ * GSM LAPDm (TS 04.06) implementation. */
+/*
+ * (C) 2010-2019 by Harald Welte <laforge@gnumonks.org>
  * (C) 2010-2011 by Andreas Eversberg <jolly@eversberg.eu>
+ * (C) 2014-2016 by sysmocom - s.f.m.c GmbH
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,23 +19,17 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 /*! \addtogroup lapdm
  *  @{
- */
-
-/*! \file lapdm.c */
+ * \file lapdm.c */
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <errno.h>
-#include <arpa/inet.h>
 
 #include <osmocom/core/logging.h>
 #include <osmocom/core/timer.h>
@@ -47,6 +45,8 @@
 #include <osmocom/gsm/protocol/gsm_04_08.h>
 #include <osmocom/gsm/protocol/gsm_08_58.h>
 
+#define LAPD_U_SABM 0x7
+
 /* TS 04.06 Figure 4 / Section 3.2 */
 #define LAPDm_LPD_NORMAL  0
 #define LAPDm_LPD_SMSCB	  1
@@ -58,6 +58,7 @@
 #define LAPDm_ADDR_SAPI(addr) (((addr) >> 2) & 0x7)
 #define LAPDm_ADDR_CR(addr) (((addr) >> 1) & 0x1)
 #define LAPDm_ADDR_EA(addr) ((addr) & 0x1)
+#define LAPDm_ADDR_SHORT_L2(addr) ((addr) & 0x3)
 
 /* TS 04.06 Table 3 / Section 3.4.3 */
 #define LAPDm_CTRL_I(nr, ns, p)	((((nr) & 0x7) << 5) | (((p) & 0x1) << 4) | (((ns) & 0x7) << 1))
@@ -111,56 +112,183 @@ enum lapdm_format {
 	LAPDm_FMT_B4,
 };
 
+const struct value_string osmo_ph_prim_names[] = {
+	{ PRIM_PH_DATA,		"PH-DATA" },
+	{ PRIM_PH_RACH,		"PH-RANDOM_ACCESS" },
+	{ PRIM_PH_CONN,		"PH-CONNECT" },
+	{ PRIM_PH_EMPTY_FRAME,	"PH-EMPTY_FRAME" },
+	{ PRIM_PH_RTS,		"PH-RTS" },
+	{ PRIM_MPH_INFO,	"MPH-INFO" },
+	{ PRIM_TCH,		"TCH" },
+	{ PRIM_TCH_RTS,		"TCH-RTS" },
+	{ 0,			NULL }
+};
+
+extern void *tall_lapd_ctx;
+
 static int lapdm_send_ph_data_req(struct lapd_msg_ctx *lctx, struct msgb *msg);
 static int send_rslms_dlsap(struct osmo_dlsap_prim *dp,
 	struct lapd_msg_ctx *lctx);
 static int update_pending_frames(struct lapd_msg_ctx *lctx);
 
 static void lapdm_dl_init(struct lapdm_datalink *dl,
-			  struct lapdm_entity *entity, int t200)
+			  struct lapdm_entity *entity, int t200_ms, uint32_t n200,
+			  const char *name)
 {
 	memset(dl, 0, sizeof(*dl));
+	INIT_LLIST_HEAD(&dl->tx_ui_queue);
 	dl->entity = entity;
-	lapd_dl_init(&dl->dl, 1, 8, 200);
+	lapd_dl_init2(&dl->dl, 1, 8, 251, name); /* Section 5.8.5 of TS 04.06 */
 	dl->dl.reestablish = 0; /* GSM uses no reestablish */
 	dl->dl.send_ph_data_req = lapdm_send_ph_data_req;
 	dl->dl.send_dlsap = send_rslms_dlsap;
 	dl->dl.update_pending_frames = update_pending_frames;
 	dl->dl.n200_est_rel = N200_EST_REL;
-	dl->dl.n200 = N200;
+	dl->dl.n200 = n200;
 	dl->dl.t203_sec = 0; dl->dl.t203_usec = 0;
-	dl->dl.t200_sec = t200; dl->dl.t200_usec = 0;
+	dl->dl.t200_sec = t200_ms / 1000; dl->dl.t200_usec = (t200_ms % 1000) * 1000;
 }
 
-/*! \brief initialize a LAPDm entity and all datalinks inside
+/*! initialize a LAPDm entity and all datalinks inside
  *  \param[in] le LAPDm entity
  *  \param[in] mode \ref lapdm_mode (BTS/MS)
+ *  \param[in] t200 T200 re-transmission timer for all SAPIs in seconds
+ *
+ *  Don't use this function; It doesn't support different T200 values per API
+ *  and doesn't permit the caller to specify the N200 counter, both of which
+ *  are required by GSM specs and supported by lapdm_entity_init2().
  */
 void lapdm_entity_init(struct lapdm_entity *le, enum lapdm_mode mode, int t200)
 {
+	/* convert from single full-second value to per-SAPI milli-second value */
+	int t200_ms_sapi_arr[_NR_DL_SAPI];
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(t200_ms_sapi_arr); i++)
+		t200_ms_sapi_arr[i] = t200 * 1000;
+
+	return lapdm_entity_init3(le, mode, t200_ms_sapi_arr, N200, NULL);
+}
+
+/*! initialize a LAPDm entity and all datalinks inside
+ *  \param[in] le LAPDm entity
+ *  \param[in] mode lapdm_mode (BTS/MS)
+ *  \param[in] t200_ms per-SAPI array of T200 re-transmission timer in milli-seconds
+ *  \param[in] n200 N200 re-transmisison count
+ */
+void lapdm_entity_init2(struct lapdm_entity *le, enum lapdm_mode mode,
+			const int *t200_ms, int n200)
+{
+	lapdm_entity_init3(le, mode, t200_ms, n200, NULL);
+}
+
+/*! initialize a LAPDm entity and all datalinks inside
+ *  \param[in] le LAPDm entity
+ *  \param[in] mode lapdm_mode (BTS/MS)
+ *  \param[in] t200_ms per-SAPI array of T200 re-transmission timer in milli-seconds
+ *  \param[in] n200 N200 re-transmisison count
+ *  \param[in] name human-readable name (will be copied internally + extended with SAPI)
+ */
+void lapdm_entity_init3(struct lapdm_entity *le, enum lapdm_mode mode,
+			const int *t200_ms, int n200, const char *name_pfx)
+{
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(le->datalink); i++)
-		lapdm_dl_init(&le->datalink[i], le, t200);
+	for (i = 0; i < ARRAY_SIZE(le->datalink); i++) {
+		char name[256];
+		if (name_pfx) {
+			snprintf(name, sizeof(name), "%s[%s]", name_pfx, i == 0 ? "0" : "3");
+			lapdm_dl_init(&le->datalink[i], le, (t200_ms) ? t200_ms[i] : 0, n200, name);
+		} else
+			lapdm_dl_init(&le->datalink[i], le, (t200_ms) ? t200_ms[i] : 0, n200, NULL);
+	}
 
 	lapdm_entity_set_mode(le, mode);
 }
 
-/*! \brief initialize a LAPDm channel and all its channels
- *  \param[in] lc \ref lapdm_channel to be initialized
- *  \param[in] mode \ref lapdm_mode (BTS/MS)
+static int get_n200_dcch(enum gsm_chan_t chan_t)
+{
+	switch (chan_t) {
+	case GSM_LCHAN_SDCCH:
+		return N200_TR_SDCCH;
+	case GSM_LCHAN_TCH_F:
+		return N200_TR_FACCH_FR;
+	case GSM_LCHAN_TCH_H:
+		return N200_TR_FACCH_HR;
+	default:
+		return -1;
+	}
+}
+
+/*! initialize a LAPDm channel and all its channels
+ *  \param[in] lc lapdm_channel to be initialized
+ *  \param[in] mode lapdm_mode (BTS/MS)
  *
- * This really is a convenience wrapper around calling \ref
- * lapdm_entity_init twice.
+ *  Don't use this function; It doesn't support different T200 values per API
+ *  and doesn't set the correct N200 counter, both of which
+ *  are required by GSM specs and supported by lapdm_channel_init2().
  */
 void lapdm_channel_init(struct lapdm_channel *lc, enum lapdm_mode mode)
 {
-	lapdm_entity_init(&lc->lapdm_acch, mode, 2);
-	/* FIXME: this depends on chan type */
-	lapdm_entity_init(&lc->lapdm_dcch, mode, 1);
+	/* emulate old backwards-compatible behavior with 1s/2s */
+	const int t200_ms_dcch[_NR_DL_SAPI] = { 1000, 1000 };
+	const int t200_ms_acch[_NR_DL_SAPI] = { 2000, 2000 };
+
+	lapdm_channel_init3(lc, mode, t200_ms_dcch, t200_ms_acch, GSM_LCHAN_SDCCH, NULL);
 }
 
-/*! \brief flush and release all resoures in LAPDm entity */
+/*! initialize a LAPDm channel and all its channels
+ *  \param[in] lc \ref lapdm_channel to be initialized
+ *  \param[in] mode \ref lapdm_mode (BTS/MS)
+ *  \param[in] t200_ms_dcch per-SAPI array of T200 in milli-seconds for DCCH
+ *  \param[in] t200_ms_acch per-SAPI array of T200 in milli-seconds for SACCH
+ *  \param[in] chan_t GSM channel type (to correctly set N200)
+ */
+int lapdm_channel_init2(struct lapdm_channel *lc, enum lapdm_mode mode,
+			const int *t200_ms_dcch, const int *t200_ms_acch, enum gsm_chan_t chan_t)
+{
+	return lapdm_channel_init3(lc, mode, t200_ms_dcch, t200_ms_acch, chan_t, NULL);
+}
+
+/*! initialize a LAPDm channel and all its channels
+ *  \param[in] lc \ref lapdm_channel to be initialized
+ *  \param[in] mode \ref lapdm_mode (BTS/MS)
+ *  \param[in] t200_ms_dcch per-SAPI array of T200 in milli-seconds for DCCH
+ *  \param[in] t200_ms_acch per-SAPI array of T200 in milli-seconds for SACCH
+ *  \param[in] chan_t GSM channel type (to correctly set N200)
+ *  \param[in] name_pfx human-readable name (copied by function + extended with ACCH/DCCH)
+ */
+int lapdm_channel_init3(struct lapdm_channel *lc, enum lapdm_mode mode,
+			const int *t200_ms_dcch, const int *t200_ms_acch, enum gsm_chan_t chan_t,
+			const char *name_pfx)
+{
+	int n200_dcch = get_n200_dcch(chan_t);
+	char namebuf[256];
+	char *name = NULL;
+
+	if (n200_dcch < 0)
+		return -EINVAL;
+
+	osmo_talloc_replace_string(tall_lapd_ctx, &lc->name, name_pfx);
+
+	if (name_pfx) {
+		snprintf(namebuf, sizeof(namebuf), "%s[ACCH]", name_pfx);
+		name = namebuf;
+	}
+	lapdm_entity_init3(&lc->lapdm_acch, mode, t200_ms_acch, N200_TR_SACCH, name);
+	lc->lapdm_acch.lapdm_ch = lc;
+
+	if (name_pfx) {
+		snprintf(namebuf, sizeof(namebuf), "%s[DCCH]", name_pfx);
+		name = namebuf;
+	}
+	lapdm_entity_init3(&lc->lapdm_dcch, mode, t200_ms_dcch, n200_dcch, name);
+	lc->lapdm_dcch.lapdm_ch = lc;
+
+	return 0;
+}
+
+/*! flush and release all resoures in LAPDm entity */
 void lapdm_entity_exit(struct lapdm_entity *le)
 {
 	unsigned int i;
@@ -169,10 +297,11 @@ void lapdm_entity_exit(struct lapdm_entity *le)
 	for (i = 0; i < ARRAY_SIZE(le->datalink); i++) {
 		dl = &le->datalink[i];
 		lapd_dl_exit(&dl->dl);
+		msgb_queue_free(&dl->tx_ui_queue);
 	}
 }
 
-/* \brief lfush and release all resources in LAPDm channel
+/* flush and release all resources in LAPDm channel
  *
  * A convenience wrapper calling \ref lapdm_entity_exit on both
  * entities inside the \ref lapdm_channel
@@ -207,8 +336,8 @@ static void lapdm_pad_msgb(struct msgb *msg, uint8_t n201)
 		return;
 	}
 
-	data = msgb_put(msg, pad_len);
-	memset(data, 0x2B, pad_len);
+	data = msgb_put(msg, pad_len); /* TODO: random padding */
+	memset(data, GSM_MACBLOCK_PADDING, pad_len);
 }
 
 /* input function that L2 calls when sending messages up to L3 */
@@ -232,11 +361,25 @@ static int tx_ph_data_enqueue(struct lapdm_datalink *dl, struct msgb *msg,
 
 	/* if there is a pending message, queue it */
 	if (le->tx_pending || le->flags & LAPDM_ENT_F_POLLING_ONLY) {
+		struct msgb *old_msg;
+
+		/* In 'RTS' mode there can be only one message. */
+		if (le->flags & LAPDM_ENT_F_RTS) {
+			/* Overwrite existing message by removing it first. */
+			if ((old_msg = msgb_dequeue(&dl->dl.tx_queue))) {
+				msgb_free(old_msg);
+				/* Reset V(S) to V(A), because there is no outstanding message now. */
+				dl->dl.v_send = dl->dl.v_ack;
+			}
+		}
+
 		*msgb_push(msg, 1) = pad;
 		*msgb_push(msg, 1) = link_id;
 		*msgb_push(msg, 1) = chan_nr;
+		/* Take ownership of msg, since we are keeping it around in this layer: */
+		talloc_steal(tall_lapd_ctx, msg);
 		msgb_enqueue(&dl->dl.tx_queue, msg);
-		return -EBUSY;
+		return 0;
 	}
 
 	osmo_prim_init(&pp.oph, SAP_GSM_PH, PRIM_PH_DATA,
@@ -251,7 +394,89 @@ static int tx_ph_data_enqueue(struct lapdm_datalink *dl, struct msgb *msg,
 	return le->l1_prim_cb(&pp.oph, le->l1_ctx);
 }
 
-static struct msgb *tx_dequeue_msgb(struct lapdm_entity *le)
+static int tx_ph_data_enqueue_ui(struct lapdm_datalink *dl, struct msgb *msg,
+				 uint8_t chan_nr, uint8_t link_id, uint8_t pad)
+{
+	struct lapdm_entity *le = dl->entity;
+	struct osmo_phsap_prim pp;
+
+	/* if there is a pending message, queue it */
+	if (le->tx_pending || le->flags & LAPDM_ENT_F_POLLING_ONLY) {
+		*msgb_push(msg, 1) = pad;
+		*msgb_push(msg, 1) = link_id;
+		*msgb_push(msg, 1) = chan_nr;
+		/* Take ownership of msg, since we are keeping it around in this layer: */
+		talloc_steal(tall_lapd_ctx, msg);
+		msgb_enqueue(&dl->tx_ui_queue, msg);
+		return 0;
+	}
+
+	osmo_prim_init(&pp.oph, SAP_GSM_PH, PRIM_PH_DATA,
+			PRIM_OP_REQUEST, msg);
+	pp.u.data.chan_nr = chan_nr;
+	pp.u.data.link_id = link_id;
+
+	/* send the frame now */
+	le->tx_pending = 0; /* disabled flow control */
+	lapdm_pad_msgb(msg, pad);
+
+	return le->l1_prim_cb(&pp.oph, le->l1_ctx);
+}
+
+/* Get transmit frame from queue, if any. In polling mode, indicate RTS to LAPD and start T200, if pending. */
+static struct msgb *tx_dequeue_msgb(struct lapdm_datalink *dl, uint32_t fn)
+{
+	struct msgb *msg;
+
+	/* Call RTS function of LAPD, to queue next frame. */
+	if (dl->entity->flags & LAPDM_ENT_F_RTS) {
+		struct lapd_msg_ctx lctx;
+		int rc;
+
+		/* Poll next frame. */
+		lctx.dl = &dl->dl;
+		rc = lapd_ph_rts_ind(&lctx);
+
+		/* If T200 has been started, calculate timeout FN. */
+		if (rc == 1) {
+			/* Set T200 in advance. */
+			dl->t200_timeout = fn;
+			ADD_MODULO(dl->t200_timeout, dl->t200_fn, GSM_MAX_FN);
+
+			LOGDL(&dl->dl, LOGL_INFO,
+			      "T200 running from FN %"PRIu32" to FN %"PRIu32" (%"PRIu32" frames).\n",
+			      fn, dl->t200_timeout, dl->t200_fn);
+		}
+	}
+
+	/* If there is no frame from LAPD, send UI frame, if any. */
+	msg = msgb_dequeue(&dl->dl.tx_queue);
+	if (msg)
+		LOGDL(&dl->dl, LOGL_INFO, "Sending frame from TX queue. (FN %"PRIu32")\n", fn);
+	else {
+		msg = msgb_dequeue(&dl->tx_ui_queue);
+		if (msg)
+			LOGDL(&dl->dl, LOGL_INFO, "Sending UI frame from TX queue. (FN %"PRIu32")\n", fn);
+	}
+	return msg;
+}
+
+/* Dequeue a Downlink message for DCCH (dedicated channel) */
+static struct msgb *tx_dequeue_dcch_msgb(struct lapdm_entity *le, uint32_t fn)
+{
+	struct msgb *msg;
+
+	/* SAPI=0 always has higher priority than SAPI=3 */
+	msg = tx_dequeue_msgb(&le->datalink[DL_SAPI0], fn);
+	if (msg == NULL) { /* no SAPI=0 messages, dequeue SAPI=3 (if any) */
+		msg = tx_dequeue_msgb(&le->datalink[DL_SAPI3], fn);
+	}
+
+	return msg;
+}
+
+/* Dequeue a Downlink message for ACCH (associated channel) */
+static struct msgb *tx_dequeue_acch_msgb(struct lapdm_entity *le, uint32_t fn)
 {
 	struct lapdm_datalink *dl;
 	int last = le->last_tx_dequeue;
@@ -263,7 +488,7 @@ static struct msgb *tx_dequeue_msgb(struct lapdm_entity *le)
 		/* next */
 		i = (i + 1) % n;
 		dl = &le->datalink[i];
-		if ((msg = msgb_dequeue(&dl->dl.tx_queue)))
+		if ((msg = tx_dequeue_msgb(dl, fn)))
 			break;
 	} while (i != last);
 
@@ -275,14 +500,19 @@ static struct msgb *tx_dequeue_msgb(struct lapdm_entity *le)
 	return msg;
 }
 
-/*! \brief dequeue a msg that's pending transmission via L1 and wrap it into
+/*! dequeue a msg that's pending transmission via L1 and wrap it into
  * a osmo_phsap_prim */
-int lapdm_phsap_dequeue_prim(struct lapdm_entity *le, struct osmo_phsap_prim *pp)
+int lapdm_phsap_dequeue_prim_fn(struct lapdm_entity *le, struct osmo_phsap_prim *pp, uint32_t fn)
 {
 	struct msgb *msg;
 	uint8_t pad;
 
-	msg = tx_dequeue_msgb(le);
+	/* Dequeue depending on channel type: DCCH or ACCH.
+	 * See 3GPP TS 44.005, section 4.2.2 "Priority". */
+	if (le == &le->lapdm_ch->lapdm_dcch)
+		msg = tx_dequeue_dcch_msgb(le, fn);
+	else
+		msg = tx_dequeue_acch_msgb(le, fn);
 	if (!msg)
 		return -ENODEV;
 
@@ -302,6 +532,57 @@ int lapdm_phsap_dequeue_prim(struct lapdm_entity *le, struct osmo_phsap_prim *pp
 	lapdm_pad_msgb(msg, pad);
 
 	return 0;
+}
+
+static void lapdm_t200_fn_dl(struct lapdm_datalink *dl, uint32_t fn)
+{
+	uint32_t diff;
+
+	OSMO_ASSERT((dl->dl.lapd_flags & LAPD_F_RTS));
+
+	/* If T200 is running, check if it has fired. */
+	if (dl->dl.t200_rts != LAPD_T200_RTS_RUNNING)
+		return;
+
+	/* Calculate how many frames fn is behind t200_timeout.
+	 * If it is negative (>= GSM_MAX_FN / 2), we have not reached t200_timeout yet.
+	 * If it is 0 or positive, we reached it or we are a bit too late, which is not a problem.
+	 */
+	diff = fn;
+	ADD_MODULO(diff, GSM_MAX_FN - dl->t200_timeout, GSM_MAX_FN);
+	if (diff >= GSM_MAX_FN / 2)
+		return;
+
+	LOGDL(&dl->dl, LOGL_INFO, "T200 timeout at FN %"PRIu32", detected at FN %"PRIu32".\n", dl->t200_timeout, fn);
+
+	lapd_t200_timeout(&dl->dl);
+}
+
+/*! Get receive frame number from L1. It is used to check the T200 timeout.
+ * This function is used if LAPD is in RTS mode only. (Applies if the LAPDM_ENT_F_POLLING_ONLY flag is set.)
+ * This function must be called for every valid or invalid data frame received.
+ * The frame number fn must be the frame number of the first burst of a data frame.
+ * This function must be called after the frame is delivered to layer 2.
+ * In case of TCH, this this function must be called for every speech frame received, meaning that there was no valid
+ * data frame. */
+void lapdm_t200_fn(struct lapdm_entity *le, uint32_t fn)
+{
+	unsigned int i;
+
+	if (!(le->flags & LAPDM_ENT_F_POLLING_ONLY)) {
+		LOGP(DLLAPD, LOGL_ERROR, "Function call not allowed on timer based T200.\n");
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(le->datalink); i++)
+		lapdm_t200_fn_dl(&le->datalink[i], fn);
+}
+
+/*! dequeue a msg that's pending transmission via L1 and wrap it into
+ * a osmo_phsap_prim */
+int lapdm_phsap_dequeue_prim(struct lapdm_entity *le, struct osmo_phsap_prim *pp)
+{
+	return lapdm_phsap_dequeue_prim_fn(le, pp, 0);
 }
 
 /* get next frame from the tx queue. because the ms has multiple datalinks,
@@ -336,12 +617,29 @@ static int l2_ph_data_conf(struct msgb *msg, struct lapdm_entity *le)
 	return le->l1_prim_cb(&pp.oph, le->l1_ctx);
 }
 
+/* Is a given msg_type "transparent" as per TS 48.058 Section 8.1 */
+static int rsl_is_transparent(uint8_t msg_type)
+{
+	switch (msg_type) {
+	case RSL_MT_DATA_IND:
+	case RSL_MT_UNIT_DATA_IND:
+		return 1;
+	case RSL_MT_DATA_REQ:
+	case RSL_MT_UNIT_DATA_REQ:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 /* Create RSLms various RSLms messages */
 static int send_rslms_rll_l3(uint8_t msg_type, struct lapdm_msg_ctx *mctx,
 			     struct msgb *msg)
 {
+	int transparent = rsl_is_transparent(msg_type);
+
 	/* Add the RSL + RLL header */
-	rsl_rll_push_l3(msg, msg_type, mctx->chan_nr, mctx->link_id, 1);
+	rsl_rll_push_l3(msg, msg_type, mctx->chan_nr, mctx->link_id, transparent);
 
 	/* send off the RSLms message to L3 */
 	return rslms_sendmsg(msg, mctx->dl->entity);
@@ -351,29 +649,28 @@ static int send_rslms_rll_l3(uint8_t msg_type, struct lapdm_msg_ctx *mctx,
 static int send_rslms_rll_l3_ui(struct lapdm_msg_ctx *mctx, struct msgb *msg)
 {
 	uint8_t l3_len = msg->tail - (uint8_t *)msgb_l3(msg);
-	struct abis_rsl_rll_hdr *rllh;
 
 	/* Add the RSL + RLL header */
 	msgb_tv16_push(msg, RSL_IE_L3_INFO, l3_len);
-	msgb_push(msg, 2 + 2);
+
+	/* Add two non-standard IEs carrying MS power and TA values for B4 (SACCH) */
+	if (mctx->lapdm_fmt == LAPDm_FMT_B4) {
+		msgb_tv_push(msg, RSL_IE_MS_POWER, mctx->tx_power_ind);
+		msgb_tv_push(msg, RSL_IE_TIMING_ADVANCE, mctx->ta_ind);
+	}
+
 	rsl_rll_push_hdr(msg, RSL_MT_UNIT_DATA_IND, mctx->chan_nr,
 		mctx->link_id, 1);
-	rllh = (struct abis_rsl_rll_hdr *)msgb_l2(msg);
 
-	rllh->data[0] = RSL_IE_TIMING_ADVANCE;
-	rllh->data[1] = mctx->ta_ind;
-
-	rllh->data[2] = RSL_IE_MS_POWER;
-	rllh->data[3] = mctx->tx_power_ind;
-	
 	return rslms_sendmsg(msg, mctx->dl->entity);
 }
 
 static int send_rll_simple(uint8_t msg_type, struct lapdm_msg_ctx *mctx)
 {
 	struct msgb *msg;
+	int transparent = rsl_is_transparent(msg_type);
 
-	msg = rsl_rll_simple(msg_type, mctx->chan_nr, mctx->link_id, 1);
+	msg = rsl_rll_simple(msg_type, mctx->chan_nr, mctx->link_id, transparent);
 
 	/* send off the RSLms message to L3 */
 	return rslms_sendmsg(msg, mctx->dl->entity);
@@ -383,8 +680,8 @@ static int rsl_rll_error(uint8_t cause, struct lapdm_msg_ctx *mctx)
 {
 	struct msgb *msg;
 
-	LOGP(DLLAPD, LOGL_NOTICE, "sending MDL-ERROR-IND %d\n", cause);
-	msg = rsl_rll_simple(RSL_MT_ERROR_IND, mctx->chan_nr, mctx->link_id, 1);
+	LOGDL(&mctx->dl->dl, LOGL_NOTICE, "sending MDL-ERROR-IND %d\n", cause);
+	msg = rsl_rll_simple(RSL_MT_ERROR_IND, mctx->chan_nr, mctx->link_id, 0);
 	msgb_tlv_put(msg, RSL_IE_RLM_CAUSE, 1, &cause);
 	return rslms_sendmsg(msg, mctx->dl->entity);
 }
@@ -401,11 +698,6 @@ static int send_rslms_dlsap(struct osmo_dlsap_prim *dp,
 
 	switch (OSMO_PRIM_HDR(&dp->oph)) {
 	case OSMO_PRIM(PRIM_DL_EST, PRIM_OP_INDICATION):
-		if (dp->oph.msg && dp->oph.msg->len == 0) {
-			/* omit L3 info by freeing message */
-			msgb_free(dp->oph.msg);
-			dp->oph.msg = NULL;
-		}
 		rll_msg = RSL_MT_EST_IND;
 		break;
 	case OSMO_PRIM(PRIM_DL_EST, PRIM_OP_CONFIRM):
@@ -433,7 +725,7 @@ static int send_rslms_dlsap(struct osmo_dlsap_prim *dp,
 	}
 
 	if (!rll_msg) {
-		LOGP(DLLAPD, LOGL_ERROR, "Unsupported op %d, prim %d. Please "
+		LOGDL(dl, LOGL_ERROR, "Unsupported op %d, prim %d. Please "
 			"fix!\n", dp->oph.primitive, dp->oph.operation);
 		return -EINVAL;
 	}
@@ -502,16 +794,50 @@ static int update_pending_frames(struct lapd_msg_ctx *lctx)
 					LAPDm_CTRL_PF_BIT(msg->l2h[1]));
 			rc = 0;
 		} else if (LAPDm_CTRL_is_S(msg->l2h[1])) {
-			LOGP(DLLAPD, LOGL_ERROR, "Supervisory frame in queue, this shouldn't happen\n");
+			msg->l2h[1] = LAPDm_CTRL_S(dl->v_recv, LAPDm_CTRL_S_BITS(msg->l2h[1]),
+						   LAPDm_CTRL_PF_BIT(msg->l2h[1]));
 		}
 	}
 
 	return rc;
 }
 
+/* determine if receiving a given LAPDm message is not permitted */
+static int lapdm_rx_not_permitted(const struct lapdm_entity *le,
+				  const struct lapd_msg_ctx *lctx)
+{
+	/* we currently only implement SABM related checks here */
+	if (lctx->format != LAPD_FORM_U || lctx->s_u != LAPD_U_SABM)
+		return 0;
+
+	if (le->mode == LAPDM_MODE_BTS) {
+		if (le == &le->lapdm_ch->lapdm_acch) {
+			/* no contention resolution on SACCH */
+			if (lctx->length > 0)
+				return RLL_CAUSE_SABM_INFO_NOTALL;
+		} else {
+			switch (lctx->sapi) {
+			case 3:
+				/* SAPI3 doesn't support contention resolution */
+				if (lctx->length > 0)
+					return RLL_CAUSE_SABM_INFO_NOTALL;
+				break;
+			default:
+				break;
+			}
+		}
+	} else if (le->mode == LAPDM_MODE_MS) {
+		/* contention resolution (L3 present) is only sent by MS, but
+		 * never received by it */
+		if (lctx->length > 0)
+			return RLL_CAUSE_SABM_INFO_NOTALL;
+	}
+	return 0;
+}
+
 /* input into layer2 (from layer 1) */
 static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
-	uint8_t chan_nr, uint8_t link_id)
+	uint8_t chan_nr, uint8_t link_id, uint32_t fn)
 {
 	uint8_t cbits = chan_nr >> 3;
 	uint8_t sapi; /* we cannot take SAPI from link_id, as L1 has no clue */
@@ -526,6 +852,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 	memset(&mctx, 0, sizeof(mctx));
 	mctx.chan_nr = chan_nr;
 	mctx.link_id = link_id;
+	mctx.fn = fn;
 
 	/* check for L1 chan_nr/link_id and determine LAPDm hdr format */
 	if (cbits == 0x10 || cbits == 0x12) {
@@ -537,17 +864,24 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 		if (mctx.link_id & 0x40) {
 			/* It was received from network on SACCH */
 
-			/* If UI on SACCH sent by BTS, lapdm_fmt must be B4 */
-			if (le->mode == LAPDM_MODE_MS
-			 && LAPDm_CTRL_is_U(msg->l2h[3])
-			 && LAPDm_CTRL_U_BITS(msg->l2h[3]) == 0) {
+			/* A Short L3 header has both bits == 0. */
+			if (LAPDm_ADDR_SHORT_L2(msg->l2h[2]) == 0) {
+				mctx.lapdm_fmt = LAPDm_FMT_Bter;
+				n201 = N201_Bter_SACCH;
+				sapi = 0;
+			} else if (le->mode == LAPDM_MODE_MS
+				&& LAPDm_CTRL_is_U(msg->l2h[3])
+				&& LAPDm_CTRL_U_BITS(msg->l2h[3]) == 0) {
+				/* If UI on SACCH sent by BTS, lapdm_fmt must be B4 */
 				mctx.lapdm_fmt = LAPDm_FMT_B4;
 				n201 = N201_B4;
-				LOGP(DLLAPD, LOGL_INFO, "fmt=B4\n");
+				/* sapi is found after two-btyte L1 header */
+				sapi = (msg->l2h[2] >> 2) & 7;
 			} else {
 				mctx.lapdm_fmt = LAPDm_FMT_B;
 				n201 = N201_AB_SACCH;
-				LOGP(DLLAPD, LOGL_INFO, "fmt=B\n");
+				/* sapi is found after two-btyte L1 header */
+				sapi = (msg->l2h[2] >> 2) & 7;
 			}
 			/* SACCH frames have a two-byte L1 header that
 			 * OsmocomBB L1 doesn't strip */
@@ -555,20 +889,24 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 			mctx.ta_ind = msg->l2h[1];
 			msgb_pull(msg, 2);
 			msg->l2h += 2;
-			sapi = (msg->l2h[0] >> 2) & 7;
 		} else {
-			mctx.lapdm_fmt = LAPDm_FMT_B;
-			LOGP(DLLAPD, LOGL_INFO, "fmt=B\n");
-			n201 = N201_AB_SDCCH;
-			sapi = (msg->l2h[0] >> 2) & 7;
+			/* A Short L3 header has both bits == 0. */
+			if (LAPDm_ADDR_SHORT_L2(msg->l2h[0]) == 0) {
+				mctx.lapdm_fmt = LAPDm_FMT_Bter;
+				n201 = N201_Bter_SDCCH;
+				sapi = 0;
+			} else {
+				mctx.lapdm_fmt = LAPDm_FMT_B;
+				n201 = N201_AB_SDCCH;
+				sapi = (msg->l2h[0] >> 2) & 7;
+			}
 		}
 	}
 
 	mctx.dl = lapdm_datalink_for_sapi(le, sapi);
 	/* G.2.1 No action on frames containing an unallocated SAPI. */
 	if (!mctx.dl) {
-		LOGP(DLLAPD, LOGL_NOTICE, "Received frame for unsupported "
-			"SAPI %d!\n", sapi);
+		LOGP(DLLAPD, LOGL_NOTICE, "Received frame for unsupported SAPI %d!\n", sapi);
 		msgb_free(msg);
 		return -EIO;
 	}
@@ -582,8 +920,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 		mctx.link_id |= LAPDm_ADDR_SAPI(msg->l2h[0]);
 		/* G.2.3 EA bit set to "0" is not allowed in GSM */
 		if (!LAPDm_ADDR_EA(msg->l2h[0])) {
-			LOGP(DLLAPD, LOGL_NOTICE, "EA bit 0 is not allowed in "
-				"GSM\n");
+			LOGDL(lctx.dl, LOGL_NOTICE, "EA bit 0 is not allowed in GSM\n");
 			msgb_free(msg);
 			rsl_rll_error(RLL_CAUSE_FRM_UNIMPL, &mctx);
 			return -EINVAL;
@@ -614,8 +951,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 			/* 5.3.3 UI frames with invalid SAPI values shall be
 			 * discarded
 			 */
-			LOGP(DLLAPD, LOGL_INFO, "sapi=%u (discarding)\n",
-				lctx.sapi);
+			LOGDL(lctx.dl, LOGL_INFO, "sapi=%u (discarding)\n", lctx.sapi);
 			msgb_free(msg);
 			return 0;
 		}
@@ -632,8 +968,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 				 * MDL-ERROR-INDICATION primitive with cause
 				 * "frame not implemented" is sent to the
 				 * mobile management entity. */
-				LOGP(DLLAPD, LOGL_NOTICE, "we don't support "
-					"multi-octet length\n");
+				LOGDL(lctx.dl, LOGL_NOTICE, "we don't support multi-octet length\n");
 				msgb_free(msg);
 				rsl_rll_error(RLL_CAUSE_FRM_UNIMPL, &mctx);
 				return -EINVAL;
@@ -646,16 +981,23 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 		}
 		/* store context for messages from lapd */
 		memcpy(&mctx.dl->mctx, &mctx, sizeof(mctx.dl->mctx));
+		rc =lapdm_rx_not_permitted(le, &lctx);
+		if (rc > 0) {
+			LOGDL(lctx.dl, LOGL_NOTICE, "received message not permitted\n");
+			msgb_free(msg);
+			rsl_rll_error(rc, &mctx);
+			return -EINVAL;
+		}
 		/* send to LAPD */
+		LOGDL(lctx.dl, LOGL_DEBUG, "Frame received at FN %"PRIu32".\n", fn);
 		rc = lapd_ph_data_ind(msg, &lctx);
 		break;
 	case LAPDm_FMT_Bter:
-		/* FIXME */
-		msgb_free(msg);
-		break;
+		/* fall-through */
 	case LAPDm_FMT_Bbis:
+		/* Update context so that users can read fields like fn: */
+		memcpy(&mctx.dl->mctx, &mctx, sizeof(mctx.dl->mctx));
 		/* directly pass up to layer3 */
-		LOGP(DLLAPD, LOGL_INFO, "fmt=Bbis UI\n");
 		msg->l3h = msg->l2h;
 		msgb_pull_to_l3(msg);
 		rc = send_rslms_rll_l3(RSL_MT_UNIT_DATA_IND, &mctx, msg);
@@ -699,7 +1041,7 @@ static int l2_ph_rach_ind(struct lapdm_entity *le, uint8_t ra, uint32_t fn, uint
 
 static int l2_ph_chan_conf(struct msgb *msg, struct lapdm_entity *le, uint32_t frame_nr);
 
-/*! \brief Receive a PH-SAP primitive from L1 */
+/*! Receive a PH-SAP primitive from L1 */
 int lapdm_phsap_up(struct osmo_prim_hdr *oph, struct lapdm_entity *le)
 {
 	struct osmo_phsap_prim *pp = (struct osmo_phsap_prim *) oph;
@@ -708,55 +1050,32 @@ int lapdm_phsap_up(struct osmo_prim_hdr *oph, struct lapdm_entity *le)
 	if (oph->sap != SAP_GSM_PH) {
 		LOGP(DLLAPD, LOGL_ERROR, "primitive for unknown SAP %u\n",
 			oph->sap);
-		rc = -ENODEV;
-		goto free;
+		msgb_free(oph->msg);
+		return -ENODEV;
 	}
 
-	switch (oph->primitive) {
-	case PRIM_PH_DATA:
-		if (oph->operation != PRIM_OP_INDICATION) {
-			LOGP(DLLAPD, LOGL_ERROR, "PH_DATA is not INDICATION %u\n",
-				oph->operation);
-			rc = -ENODEV;
-			goto free;
-		}
+	switch (OSMO_PRIM_HDR(oph)) {
+	case OSMO_PRIM(PRIM_PH_DATA, PRIM_OP_INDICATION):
 		rc = l2_ph_data_ind(oph->msg, le, pp->u.data.chan_nr,
-				    pp->u.data.link_id);
+				    pp->u.data.link_id, pp->u.data.fn);
 		break;
-	case PRIM_PH_RTS:
-		if (oph->operation != PRIM_OP_INDICATION) {
-			LOGP(DLLAPD, LOGL_ERROR, "PH_RTS is not INDICATION %u\n",
-				oph->operation);
-			rc = -ENODEV;
-			goto free;
-		}
+	case OSMO_PRIM(PRIM_PH_RTS, PRIM_OP_INDICATION):
 		rc = l2_ph_data_conf(oph->msg, le);
 		break;
-	case PRIM_PH_RACH:
-		switch (oph->operation) {
-		case PRIM_OP_INDICATION:
-			rc = l2_ph_rach_ind(le, pp->u.rach_ind.ra, pp->u.rach_ind.fn,
-					    pp->u.rach_ind.acc_delay);
-			break;
-		case PRIM_OP_CONFIRM:
-			rc = l2_ph_chan_conf(oph->msg, le, pp->u.rach_ind.fn);
-			break;
-		default:
-			rc = -EIO;
-			goto free;
-		}
+	case OSMO_PRIM(PRIM_PH_RACH, PRIM_OP_INDICATION):
+		rc = l2_ph_rach_ind(le, pp->u.rach_ind.ra, pp->u.rach_ind.fn,
+				    pp->u.rach_ind.acc_delay);
+		break;
+	case OSMO_PRIM(PRIM_PH_RACH, PRIM_OP_CONFIRM):
+		rc = l2_ph_chan_conf(oph->msg, le, pp->u.rach_ind.fn);
 		break;
 	default:
 		LOGP(DLLAPD, LOGL_ERROR, "Unknown primitive %u\n",
 			oph->primitive);
-		rc = -EINVAL;
-		goto free;
+		msgb_free(oph->msg);
+		return -EINVAL;
 	}
 
-	return rc;
-
-free:
-	msgb_free(oph->msg);
 	return rc;
 }
 
@@ -800,7 +1119,7 @@ static int rslms_rx_rll_est_req(struct msgb *msg, struct lapdm_datalink *dl)
 		if (sapi != 0) {
 			/* According to clause 6, the contention resolution
 			 * procedure is only permitted with SAPI value 0 */
-			LOGP(DLLAPD, LOGL_ERROR, "SAPI != 0 but contention"
+			LOGDL(&dl->dl, LOGL_ERROR, "SAPI != 0 but contention"
 				"resolution (discarding)\n");
 			msgb_free(msg);
 			return send_rll_simple(RSL_MT_REL_IND, &dl->mctx);
@@ -816,7 +1135,7 @@ static int rslms_rx_rll_est_req(struct msgb *msg, struct lapdm_datalink *dl)
 
 	/* check if the layer3 message length exceeds N201 */
 	if (length > n201) {
-		LOGP(DLLAPD, LOGL_ERROR, "frame too large: %d > N201(%d) "
+		LOGDL(&dl->dl, LOGL_ERROR, "frame too large: %d > N201(%d) "
 			"(discarding)\n", length, n201);
 		msgb_free(msg);
 		return send_rll_simple(RSL_MT_REL_IND, &dl->mctx);
@@ -840,10 +1159,17 @@ static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 	struct abis_rsl_rll_hdr *rllh = msgb_l2(msg);
 	uint8_t chan_nr = rllh->chan_nr;
 	uint8_t link_id = rllh->link_id;
-	int ui_bts = (le->mode == LAPDM_MODE_BTS && (link_id & 0x40));
 	uint8_t sapi = link_id & 7;
 	struct tlv_parsed tv;
-	int length;
+	int length, ui_bts;
+	bool use_b_ter;
+
+	if (!le) {
+		LOGDL(&dl->dl, LOGL_ERROR, "lapdm_datalink without entity error\n");
+		msgb_free(msg);
+		return -EMLINK;
+	}
+	ui_bts = (le->mode == LAPDM_MODE_BTS && (link_id & 0x40));
 
 	/* check if the layer3 message length exceeds N201 */
 
@@ -856,35 +1182,38 @@ static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 		le->tx_power = *TLVP_VAL(&tv, RSL_IE_MS_POWER);
 	}
 	if (!TLVP_PRESENT(&tv, RSL_IE_L3_INFO)) {
-		LOGP(DLLAPD, LOGL_ERROR, "unit data request without message "
-			"error\n");
+		LOGDL(&dl->dl, LOGL_ERROR, "unit data request without message error\n");
 		msgb_free(msg);
 		return -EINVAL;
 	}
 	msg->l3h = (uint8_t *) TLVP_VAL(&tv, RSL_IE_L3_INFO);
 	length = TLVP_LEN(&tv, RSL_IE_L3_INFO);
+	/* check for Bter frame */
+	use_b_ter = (length == ((link_id & 0x40) ? 21 : 23) && sapi == 0);
 	/* check if the layer3 message length exceeds N201 */
-	if (length + ((link_id & 0x40) ? 4 : 2) + !ui_bts > 23) {
-		LOGP(DLLAPD, LOGL_ERROR, "frame too large: %d > N201(%d) "
+	if (length + ((link_id & 0x40) ? 4 : 2) + !ui_bts > 23 && !use_b_ter) {
+		LOGDL(&dl->dl, LOGL_ERROR, "frame too large: %d > N201(%d) "
 			"(discarding)\n", length,
 			((link_id & 0x40) ? 18 : 20) + ui_bts);
 		msgb_free(msg);
 		return -EIO;
 	}
 
-	LOGP(DLLAPD, LOGL_INFO, "sending unit data (tx_power=%d, ta=%d)\n",
-		le->tx_power, le->ta);
+	LOGDL(&dl->dl, LOGL_INFO, "sending unit data (tx_power=%d, ta=%d)\n", le->tx_power, le->ta);
 
 	/* Remove RLL header from msgb and set length to L3-info */
 	msgb_pull_to_l3(msg);
 	msgb_trim(msg, length);
 
 	/* Push L1 + LAPDm header on msgb */
-	msg->l2h = msgb_push(msg, 2 + !ui_bts);
-	msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, sapi, dl->dl.cr.loc2rem.cmd);
-	msg->l2h[1] = LAPDm_CTRL_U(LAPDm_U_UI, 0);
-	if (!ui_bts)
-		msg->l2h[2] = LAPDm_LEN(length);
+	if (!use_b_ter) {
+		msg->l2h = msgb_push(msg, 2 + !ui_bts);
+		msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, sapi, dl->dl.cr.loc2rem.cmd);
+		msg->l2h[1] = LAPDm_CTRL_U(LAPDm_U_UI, 0);
+		if (!ui_bts)
+			msg->l2h[2] = LAPDm_LEN(length);
+	} else
+		msg->l2h = msg->data;
 	if (link_id & 0x40) {
 		msg->l2h = msgb_push(msg, 2);
 		msg->l2h[0] = le->tx_power;
@@ -892,7 +1221,7 @@ static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 	}
 
 	/* Tramsmit */
-	return tx_ph_data_enqueue(dl, msg, chan_nr, link_id, 23);
+	return tx_ph_data_enqueue_ui(dl, msg, chan_nr, link_id, 23);
 }
 
 /* L3 requests transfer of acknowledged information */
@@ -905,8 +1234,7 @@ static int rslms_rx_rll_data_req(struct msgb *msg, struct lapdm_datalink *dl)
 
 	rsl_tlv_parse(&tv, rllh->data, msgb_l2len(msg)-sizeof(*rllh));
 	if (!TLVP_PRESENT(&tv, RSL_IE_L3_INFO)) {
-		LOGP(DLLAPD, LOGL_ERROR, "data request without message "
-			"error\n");
+		LOGDL(&dl->dl, LOGL_ERROR, "data request without message error\n");
 		msgb_free(msg);
 		return -EINVAL;
 	}
@@ -932,7 +1260,7 @@ static int rslms_rx_rll_susp_req(struct msgb *msg, struct lapdm_datalink *dl)
 	struct osmo_dlsap_prim dp;
 
 	if (sapi != 0) {
-		LOGP(DLLAPD, LOGL_ERROR, "SAPI != 0 while suspending\n");
+		LOGDL(&dl->dl, LOGL_ERROR, "SAPI != 0 while suspending\n");
 		msgb_free(msg);
 		return -EINVAL;
 	}
@@ -962,7 +1290,7 @@ static int rslms_rx_rll_res_req(struct msgb *msg, struct lapdm_datalink *dl)
 
 	rsl_tlv_parse(&tv, rllh->data, msgb_l2len(msg)-sizeof(*rllh));
 	if (!TLVP_PRESENT(&tv, RSL_IE_L3_INFO)) {
-		LOGP(DLLAPD, LOGL_ERROR, "resume without message error\n");
+		LOGDL(&dl->dl, LOGL_ERROR, "resume without message error\n");
 		msgb_free(msg);
 		return send_rll_simple(RSL_MT_REL_IND, &dl->mctx);
 	}
@@ -1067,7 +1395,7 @@ static int l2_ph_chan_conf(struct msgb *msg, struct lapdm_entity *le, uint32_t f
 	ref->t2 = tm.t2;
 	ref->t3_low = tm.t3 & 0x7;
 	ref->t3_high = tm.t3 >> 3;
-	
+
 	return rslms_sendmsg(msg, le);
 }
 
@@ -1092,6 +1420,23 @@ static int rslms_rx_rll(struct msgb *msg, struct lapdm_channel *lc)
 	else
 		le = &lc->lapdm_dcch;
 
+	/* 4.1.1.5 / 4.1.1.6 / 4.1.1.7 all only exist on MS side, not
+	 * BTS side */
+	if (le->mode == LAPDM_MODE_BTS) {
+		switch (msg_type) {
+		case RSL_MT_SUSP_REQ:
+		case RSL_MT_RES_REQ:
+		case RSL_MT_RECON_REQ:
+			LOGP(DLLAPD, LOGL_NOTICE, "(%s) RLL Message '%s' unsupported in BTS side LAPDm\n",
+				lc->name, rsl_msg_name(msg_type));
+			msgb_free(msg);
+			return -EINVAL;
+			break;
+		default:
+			break;
+		}
+	}
+
 	/* G.2.1 No action shall be taken on frames containing an unallocated
 	 * SAPI.
 	 */
@@ -1109,14 +1454,14 @@ static int rslms_rx_rll(struct msgb *msg, struct lapdm_channel *lc)
 		/* This is triggered in abnormal error conditions where
 		 * set_lapdm_context() was not called for the channel earlier. */
 		if (!dl->dl.lctx.dl) {
-			LOGP(DLLAPD, LOGL_NOTICE, "(%p) RLL Message '%s' received without LAPDm context. (sapi %d)\n",
+			LOGP(DLLAPD, LOGL_NOTICE, "(%s) RLL Message '%s' received without LAPDm context. (sapi %d)\n",
 					lc->name, rsl_msg_name(msg_type), sapi);
 			msgb_free(msg);
 			return -EINVAL;
 		}
 		break;
 	default:
-		LOGP(DLLAPD, LOGL_INFO, "(%p) RLL Message '%s' received. (sapi %d)\n",
+		LOGP(DLLAPD, LOGL_INFO, "(%s) RLL Message '%s' received. (sapi %d)\n",
 			lc->name, rsl_msg_name(msg_type), sapi);
 	}
 
@@ -1178,7 +1523,8 @@ static int rslms_rx_com_chan(struct msgb *msg, struct lapdm_channel *lc)
 	return rc;
 }
 
-/*! \brief Receive a RSLms \ref msgb from Layer 3 */
+/*! Receive a RSLms \ref msgb from Layer 3. 'msg' ownership is transferred,
+ *  i.e. caller must not free it */
 int lapdm_rslms_recvmsg(struct msgb *msg, struct lapdm_channel *lc)
 {
 	struct abis_rsl_common_hdr *rslh = msgb_l2(msg);
@@ -1186,6 +1532,7 @@ int lapdm_rslms_recvmsg(struct msgb *msg, struct lapdm_channel *lc)
 
 	if (msgb_l2len(msg) < sizeof(*rslh)) {
 		LOGP(DLLAPD, LOGL_ERROR, "Message too short RSL hdr!\n");
+		msgb_free(msg);
 		return -EINVAL;
 	}
 
@@ -1206,7 +1553,7 @@ int lapdm_rslms_recvmsg(struct msgb *msg, struct lapdm_channel *lc)
 	return rc;
 }
 
-/*! \brief Set the \ref lapdm_mode of a LAPDm entity */
+/*! Set the \ref lapdm_mode of a LAPDm entity */
 int lapdm_entity_set_mode(struct lapdm_entity *le, enum lapdm_mode mode)
 {
 	int i;
@@ -1232,7 +1579,7 @@ int lapdm_entity_set_mode(struct lapdm_entity *le, enum lapdm_mode mode)
 	return 0;
 }
 
-/*! \brief Set the \ref lapdm_mode of a LAPDm channel*/
+/*! Set the \ref lapdm_mode of a LAPDm channel*/
 int lapdm_channel_set_mode(struct lapdm_channel *lc, enum lapdm_mode mode)
 {
 	int rc;
@@ -1244,7 +1591,7 @@ int lapdm_channel_set_mode(struct lapdm_channel *lc, enum lapdm_mode mode)
 	return lapdm_entity_set_mode(&lc->lapdm_acch, mode);
 }
 
-/*! \brief Set the L1 callback and context of a LAPDm channel */
+/*! Set the L1 callback and context of a LAPDm channel */
 void lapdm_channel_set_l1(struct lapdm_channel *lc, osmo_prim_cb cb, void *ctx)
 {
 	lc->lapdm_dcch.l1_prim_cb = cb;
@@ -1253,7 +1600,7 @@ void lapdm_channel_set_l1(struct lapdm_channel *lc, osmo_prim_cb cb, void *ctx)
 	lc->lapdm_acch.l1_ctx = ctx;
 }
 
-/*! \brief Set the L3 callback and context of a LAPDm channel */
+/*! Set the L3 callback and context of a LAPDm channel */
 void lapdm_channel_set_l3(struct lapdm_channel *lc, lapdm_cb_t cb, void *ctx)
 {
 	lc->lapdm_dcch.l3_cb = cb;
@@ -1262,7 +1609,7 @@ void lapdm_channel_set_l3(struct lapdm_channel *lc, lapdm_cb_t cb, void *ctx)
 	lc->lapdm_acch.l3_ctx = ctx;
 }
 
-/*! \brief Reset an entire LAPDm entity and all its datalinks */
+/*! Reset an entire LAPDm entity and all its datalinks */
 void lapdm_entity_reset(struct lapdm_entity *le)
 {
 	struct lapdm_datalink *dl;
@@ -1271,27 +1618,64 @@ void lapdm_entity_reset(struct lapdm_entity *le)
 	for (i = 0; i < ARRAY_SIZE(le->datalink); i++) {
 		dl = &le->datalink[i];
 		lapd_dl_reset(&dl->dl);
+		msgb_queue_free(&dl->tx_ui_queue);
 	}
 }
 
-/*! \brief Reset a LAPDm channel with all its entities */
+/*! Reset a LAPDm channel with all its entities */
 void lapdm_channel_reset(struct lapdm_channel *lc)
 {
 	lapdm_entity_reset(&lc->lapdm_dcch);
 	lapdm_entity_reset(&lc->lapdm_acch);
 }
 
-/*! \brief Set the flags of a LAPDm entity */
+/*! Set the flags of a LAPDm entity */
 void lapdm_entity_set_flags(struct lapdm_entity *le, unsigned int flags)
 {
+	unsigned int dl_flags = 0;
+	struct lapdm_datalink *dl;
+	int i;
+
 	le->flags = flags;
+
+	/* Set flags at LAPD. */
+	if (le->flags & LAPDM_ENT_F_RTS)
+		dl_flags |= LAPD_F_RTS;
+	if (le->flags & LAPDM_ENT_F_DROP_2ND_REJ)
+		dl_flags |= LAPD_F_DROP_2ND_REJ;
+
+	for (i = 0; i < ARRAY_SIZE(le->datalink); i++) {
+		dl = &le->datalink[i];
+		lapd_dl_set_flags(&dl->dl, dl_flags);
+	}
 }
 
-/*! \brief Set the flags of all LAPDm entities in a LAPDm channel */
+/*! Set the flags of all LAPDm entities in a LAPDm channel */
 void lapdm_channel_set_flags(struct lapdm_channel *lc, unsigned int flags)
 {
 	lapdm_entity_set_flags(&lc->lapdm_dcch, flags);
 	lapdm_entity_set_flags(&lc->lapdm_acch, flags);
+}
+
+/*! Set the T200 FN timer of a LAPDm entity
+ *  \param[in] \ref lapdm_entity
+ *  \param[in] t200_fn Array of T200 timeout in frame numbers for all SAPIs (0, 3) */
+void lapdm_entity_set_t200_fn(struct lapdm_entity *le, const uint32_t *t200_fn)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(le->datalink); i++)
+		le->datalink[i].t200_fn = t200_fn[i];
+}
+
+/*! Set the T200 FN timer of all LAPDm entities in a LAPDm channel
+ *  \param[in] \ref lapdm_channel
+ *  \param[in] t200_fn_dcch Array of T200 timeout in frame numbers for all SAPIs (0, 3) on SDCCH/FACCH
+ *  \param[in] t200_fn_acch Array of T200 timeout in frame numbers for all SAPIs (0, 3) on SACCH */
+void lapdm_channel_set_t200_fn(struct lapdm_channel *lc, const uint32_t *t200_fn_dcch, const uint32_t *t200_fn_acch)
+{
+	lapdm_entity_set_t200_fn(&lc->lapdm_dcch, t200_fn_dcch);
+	lapdm_entity_set_t200_fn(&lc->lapdm_acch, t200_fn_acch);
 }
 
 /*! @} */

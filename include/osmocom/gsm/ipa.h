@@ -1,3 +1,5 @@
+/*! \file ipa.h */
+
 #pragma once
 
 #include <stdint.h>
@@ -24,11 +26,16 @@ struct ipaccess_unit {
 /* obtain the human-readable name of an IPA CCM ID TAG */
 const char *ipa_ccm_idtag_name(uint8_t tag);
 
-/* parse a buffer of ID tags into a osmocom TLV style representation */
-int ipa_ccm_idtag_parse(struct tlv_parsed *dec, unsigned char *buf, int len);
+int ipa_ccm_idtag_parse(struct tlv_parsed *dec, unsigned char *buf, int len)
+	OSMO_DEPRECATED("Use ipa_ccm_id_{get,resp}_parse instead");
+int ipa_ccm_idtag_parse_off(struct tlv_parsed *dec, unsigned char *buf, int len, const int len_offset)
+	OSMO_DEPRECATED_OUTSIDE("Use ipa_ccm_id_{get,resp}_parse instead");
 
-/* Is the TAG included in the length field? */
-int ipa_ccm_idtag_parse_off(struct tlv_parsed *dec, unsigned char *buf, int len, const int len_offset);
+/* parse payload of IPA CCM ID GET into a osmocom TLV style representation */
+int ipa_ccm_id_get_parse(struct tlv_parsed *dec, const uint8_t *buf, unsigned int len);
+
+/* parse payload of IPA CCM ID RESP into a osmocom TLV style representation */
+int ipa_ccm_id_resp_parse(struct tlv_parsed *dec, const uint8_t *buf, unsigned int len);
 
 /* parse an Unit ID in string format into the 'ipaccess_unit' data structure */
 int ipa_parse_unitid(const char *str, struct ipaccess_unit *unit_data);
@@ -36,6 +43,13 @@ int ipa_parse_unitid(const char *str, struct ipaccess_unit *unit_data);
 /* fill a 'struct ipaccess_unit' based on a parsed IDTAG TLV */
 int ipa_ccm_tlv_to_unitdata(struct ipaccess_unit *ud,
 			     const struct tlv_parsed *tp);
+
+
+struct msgb *ipa_ccm_make_id_resp(const struct ipaccess_unit *dev,
+				  const uint8_t *ies_req, unsigned int num_ies_req);
+
+struct msgb *ipa_ccm_make_id_resp_from_req(const struct ipaccess_unit *dev,
+					   const uint8_t *data, unsigned int len);
 
 /* Send an IPA message to the given FD */
 int ipa_send(int fd, const void *msg, size_t msglen);

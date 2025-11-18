@@ -1,10 +1,12 @@
 /* Test routines for the BSSGP implementation in libosmogb
  *
- * (C) 2014 by sysmocom s.f.m.c. GmbH
+ * (C) 2014 by sysmocom - s.f.m.c. GmbH
  * Author: Jacob Erlbeck <jerlbeck@sysmocom.de>
  *
  * Skeleton based on bssgp_fc_test.c
  * (C) 2012 by Harald Welte <laforge@gnumonks.org>
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #undef _GNU_SOURCE
@@ -45,7 +47,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
 	if (!real_sendto)
 		real_sendto = dlsym(RTLD_NEXT, "sendto");
 
-	fprintf(stderr, "MESSAGE to 0x%08x, msg length %d\n%s\n",
+	fprintf(stderr, "MESSAGE to 0x%08x, msg length %zu\n%s\n",
 		dest_host, len, osmo_hexdump(buf, len));
 
 	return len;
@@ -55,7 +57,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
 int gprs_ns_callback(enum gprs_ns_evt event, struct gprs_nsvc *nsvc,
 			 struct msgb *msg, uint16_t bvci)
 {
-	fprintf(stderr, "CALLBACK, event %d, msg length %d, bvci 0x%04x\n%s\n\n",
+	fprintf(stderr, "CALLBACK, event %d, msg length %td, bvci 0x%04x\n%s\n\n",
 			event, msgb_bssgp_len(msg), bvci,
 			osmo_hexdump(msgb_bssgph(msg), msgb_bssgp_len(msg)));
 	return 0;
@@ -96,11 +98,11 @@ static void msgb_bssgp_send_and_free(struct msgb *msg)
 static void send_bssgp_supend(enum bssgp_pdu_type pdu_type, uint32_t tlli)
 {
 	struct msgb *msg = bssgp_msgb_alloc();
-	uint32_t tlli_be = htonl(tlli);
 	uint8_t rai[] = {0x0f, 0xf1, 0x80, 0x20, 0x37, 0x00};
 
 	msgb_v_put(msg, pdu_type);
-	msgb_tvlv_put(msg, BSSGP_IE_TLLI, sizeof(tlli_be), (uint8_t *)&tlli_be);
+
+	bssgp_msgb_tlli_put(msg, tlli);
 	msgb_tvlv_put(msg, BSSGP_IE_ROUTEING_AREA, sizeof(rai), &rai[0]);
 
 	msgb_bssgp_send_and_free(msg);
@@ -109,12 +111,12 @@ static void send_bssgp_supend(enum bssgp_pdu_type pdu_type, uint32_t tlli)
 static void send_bssgp_resume(enum bssgp_pdu_type pdu_type, uint32_t tlli)
 {
 	struct msgb *msg = bssgp_msgb_alloc();
-	uint32_t tlli_be = htonl(tlli);
 	uint8_t rai[] = {0x0f, 0xf1, 0x80, 0x20, 0x37, 0x00};
 	uint8_t suspend_ref = 1;
 
 	msgb_v_put(msg, pdu_type);
-	msgb_tvlv_put(msg, BSSGP_IE_TLLI, sizeof(tlli_be), (uint8_t *)&tlli_be);
+
+	bssgp_msgb_tlli_put(msg, tlli);
 	msgb_tvlv_put(msg, BSSGP_IE_ROUTEING_AREA, sizeof(rai), &rai[0]);
 	msgb_tvlv_put(msg, BSSGP_IE_SUSPEND_REF_NR, 1, &suspend_ref);
 
@@ -171,7 +173,7 @@ static void test_bssgp_status(void)
 	printf("----- %s END\n", __func__);
 }
 
-static void test_bssgp_bad_reset()
+static void test_bssgp_bad_reset(void)
 {
 	struct msgb *msg;
 	uint16_t bvci_be = htons(2);
@@ -254,15 +256,51 @@ static void test_bssgp_flow_control_bvc(void)
 	printf("----- %s END\n", __func__);
 }
 
+static void test_bssgp_msgb_copy(void)
+{
+	struct msgb *msg, *msg2;
+	uint16_t bvci_be = htons(2);
+	uint8_t cause = BSSGP_CAUSE_OML_INTERV;
+
+	printf("----- %s START\n", __func__);
+	msg = bssgp_msgb_alloc();
+
+	msg->l3h = msgb_data(msg);
+	msgb_v_put(msg, BSSGP_PDUT_BVC_RESET);
+	msgb_tvlv_put(msg, BSSGP_IE_BVCI, sizeof(bvci_be), (uint8_t *)&bvci_be);
+	msgb_tvlv_put(msg, BSSGP_IE_CAUSE, sizeof(cause), &cause);
+
+	msgb_bvci(msg) = 0xbad;
+	msgb_nsei(msg) = 0xbee;
+
+	printf("Old msgb: %s\n", msgb_hexdump(msg));
+	msg2 = bssgp_msgb_copy(msg, "test");
+	printf("New msgb: %s\n", msgb_hexdump(msg2));
+
+	OSMO_ASSERT(msgb_bvci(msg2) == 0xbad);
+	OSMO_ASSERT(msgb_nsei(msg2) == 0xbee);
+	OSMO_ASSERT(msgb_l3(msg2) == msgb_data(msg2));
+	OSMO_ASSERT(msgb_bssgph(msg2) == msgb_data(msg2));
+	OSMO_ASSERT(msgb_bssgp_len(msg2) == msgb_length(msg2));
+
+	msgb_free(msg);
+	msgb_free(msg2);
+
+	printf("----- %s END\n", __func__);
+}
+
 static struct log_info info = {};
 
 int main(int argc, char **argv)
 {
 	struct sockaddr_in bss_peer= {0};
+	void *ctx = talloc_named_const(NULL, 0, "gprs_bssgp_test");
 
-	osmo_init_logging(&info);
+	osmo_init_logging2(ctx, &info);
 	log_set_use_color(osmo_stderr_target, 0);
-	log_set_print_filename(osmo_stderr_target, 0);
+	log_set_print_filename2(osmo_stderr_target, LOG_FILENAME_NONE);
+
+	msgb_talloc_ctx_init(ctx, 0);
 
 	bssgp_nsi = gprs_ns_instantiate(gprs_ns_callback, NULL);
 
@@ -278,6 +316,7 @@ int main(int argc, char **argv)
 	test_bssgp_status();
 	test_bssgp_bad_reset();
 	test_bssgp_flow_control_bvc();
+	test_bssgp_msgb_copy();
 	printf("===== BSSGP test END\n\n");
 
 	exit(EXIT_SUCCESS);

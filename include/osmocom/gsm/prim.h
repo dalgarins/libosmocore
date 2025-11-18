@@ -1,3 +1,5 @@
+/*! \file prim.h */
+
 #pragma once
 
 #include <osmocom/core/prim.h>
@@ -12,4 +14,11 @@ enum osmo_gsm_sap {
 	SAP_BSSGP_LL,
 	SAP_BSSGP_NM,
 	SAP_BSSGP_PFM,
+
+	SAP_NS,
+
+	SAP_BSSGP_RIM,
+
+	SAP_IUUP_TNL,
+	SAP_IUUP_RNL,
 };

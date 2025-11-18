@@ -1,3 +1,5 @@
+/*! \file gsm48_ie.h */
+
 #pragma once
 
 #include <stdint.h>
@@ -5,13 +7,18 @@
 #include <errno.h>
 
 #include <osmocom/core/msgb.h>
+#include <osmocom/core/defs.h>
 #include <osmocom/gsm/tlv.h>
 #include <osmocom/gsm/mncc.h>
 #include <osmocom/gsm/protocol/gsm_04_08.h>
 
 /* decode a 'called/calling/connect party BCD number' as in 10.5.4.7 */
 int gsm48_decode_bcd_number(char *output, int output_len,
-			    const uint8_t *bcd_lv, int h_len);
+			    const uint8_t *bcd_lv, int h_len)
+	OSMO_DEPRECATED_OUTSIDE("Use gsm48_decode_bcd_number2() for improved bounds checking");
+int gsm48_decode_bcd_number2(char *output, size_t output_len,
+			     const uint8_t *bcd_lv, size_t input_len,
+			     size_t h_len);
 
 /* convert a ASCII phone number to 'called/calling/connect party BCD number' */
 int gsm48_encode_bcd_number(uint8_t *bcd_lv, uint8_t max_len,
@@ -110,5 +117,10 @@ struct gsm_sysinfo_freq {
 };
 
 /* decode "Cell Channel Description" (10.5.2.1b) and other frequency lists */
-int gsm48_decode_freq_list(struct gsm_sysinfo_freq *f, uint8_t *cd,
-			   uint8_t len, uint8_t mask, uint8_t frqt);
+int gsm48_decode_freq_list(struct gsm_sysinfo_freq *f,
+			   const uint8_t *cd, uint8_t len,
+			   uint8_t mask, uint8_t frqt);
+
+/* decode "CSN.1 encoded Classmark 3" (10.5.1.7) */
+int gsm48_decode_classmark3(struct gsm48_classmark3 *classmark3_out,
+			    const uint8_t *classmark3, size_t classmark3_len);

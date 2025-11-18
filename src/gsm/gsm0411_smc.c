@@ -1,14 +1,16 @@
-/* Point-to-Point (PP) Short Message Service (SMS)
+/* Point-to-Point (PP) Short Message Service (SMS).
  * Support on Mobile Radio Interface
- * 3GPP TS 04.11 version 7.1.0 Release 1998 / ETSI TS 100 942 V7.1.0 */
-
-/* (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
+ * 3GPP TS 04.11 version 7.1.0 Release 1998 / ETSI TS 100 942 V7.1.0. */
+/*
+ * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009 by Harald Welte <laforge@gnumonks.org>
  * (C) 2010 by Holger Hans Peter Freyther <zecke@selfish.org>
  * (C) 2010 by On-Waves
  * (C) 2011 by Andreas Eversberg <jolly@eversberg.eu>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -49,8 +51,9 @@
  *
  */
 
-#include <string.h>
+#include <sys/types.h>
 #include <inttypes.h>
+#include <string.h>
 #include <errno.h>
 #include <osmocom/core/msgb.h>
 #include <osmocom/core/logging.h>
@@ -59,6 +62,12 @@
 #include <osmocom/gsm/gsm0411_utils.h>
 #include <osmocom/gsm/gsm0411_smc.h>
 #include <osmocom/gsm/protocol/gsm_04_08.h>
+
+/*! \addtogroup sms
+ *  @{
+ *  \file gsm0411_smc.c
+ *  Point-to-Point (PP) Short Message Service (SMS) as per TS 04.11
+ */
 
 static void cp_timer_expired(void *data);
 
@@ -184,8 +193,7 @@ static int gsm411_mmsms_send_msg(struct gsm411_smc_inst *inst)
 	/* 5.2.3.1.2: enter MO-wait for CP-ACK */
 	/* 5.2.3.2.3: enter MT-wait for CP-ACK */
 	new_cp_state(inst, GSM411_CPS_WAIT_CP_ACK);
-	inst->cp_timer.data = inst;
-	inst->cp_timer.cb = cp_timer_expired;
+	osmo_timer_setup(&inst->cp_timer, cp_timer_expired, inst);
 	/* 5.3.2.1: Set Timer TC1A */
 	osmo_timer_schedule(&inst->cp_timer, inst->cp_tc1, 0);
 	/* clone cp_msg */
@@ -570,3 +578,12 @@ int gsm411_smc_recv(struct gsm411_smc_inst *inst, int msg_type,
 
 	return rc;
 }
+
+const struct value_string gsm411_cp_state_names[] = {
+	{ GSM411_CPS_IDLE,		"IDLE" },
+	{ GSM411_CPS_MM_CONN_PENDING,	"MM_CONN_PENDING" },
+	{ GSM411_CPS_WAIT_CP_ACK,	"WAIT_CP_ACK" },
+	{ GSM411_CPS_MM_ESTABLISHED,	"ESTABLISHD" },
+	{ 0, NULL }
+};
+/*! @} */

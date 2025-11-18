@@ -1,5 +1,6 @@
+/*! \file aes.h
+ * AES functions */
 /*
- * AES functions
  * Copyright (c) 2003-2006, Jouni Malinen <j@w1.fi>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -8,6 +9,8 @@
  *
  * Alternatively, this software may be distributed under the terms of BSD
  * license.
+ *
+ * SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
  *
  * See README and COPYING for more details.
  */

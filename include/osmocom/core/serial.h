@@ -1,6 +1,6 @@
+/*! \file serial.h
+ * Osmocom serial port helpers. */
 /*
- * serial.h
- *
  * Copyright (C) 2011  Sylvain Munaut <tnt@246tNt.com>
  *
  * All Rights Reserved
@@ -14,19 +14,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 /*! \defgroup serial Utility functions to deal with serial ports
  *  @{
- */
-
-/*! \file serial.h
- * Osmocom serial port helpers
- */
+ * \file serial.h */
 
 #pragma once
 
@@ -36,5 +28,6 @@ int osmo_serial_init(const char *dev, speed_t baudrate);
 int osmo_serial_set_baudrate(int fd, speed_t baudrate);
 int osmo_serial_set_custom_baudrate(int fd, int baudrate);
 int osmo_serial_clear_custom_baudrate(int fd);
+int osmo_serial_speed_t(unsigned int baudrate, speed_t *speed);
 
 /*! @} */

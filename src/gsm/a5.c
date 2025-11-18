@@ -1,15 +1,9 @@
 /*
- * a5.c
- *
- * Full reimplementation of A5/1,2 (split and threadsafe)
- *
- * The logic behind the algorithm is taken from "A pedagogical implementation
- * of the GSM A5/1 and A5/2 "voice privacy" encryption algorithms." by
- * Marc Briceno, Ian Goldberg, and David Wagner.
- *
  * Copyright (C) 2011  Sylvain Munaut <tnt@246tNt.com>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,18 +14,17 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 /*! \addtogroup a5
  *  @{
- */
-
-/*! \file gsm/a5.c
- *  \brief Osmocom GSM A5 ciphering algorithm implementation
+ *  Osmocom GSM ciphering algorithm implementation
+ *
+ *  Full reimplementation of A5/1,2,3,4 (split and threadsafe).
+ *
+ *  The logic behind the algorithm is taken from "A pedagogical implementation
+ *  of the GSM A5/1 and A5/2 "voice privacy" encryption algorithms." by
+ *  Marc Briceno, Ian Goldberg, and David Wagner.
  */
 
 #include <errno.h>
@@ -40,6 +33,7 @@
 
 #include <osmocom/gsm/a5.h>
 #include <osmocom/gsm/kasumi.h>
+#include <osmocom/crypt/auth.h>
 
 /* Somme OS (like Nuttx) don't have ENOTSUP */
 #ifndef ENOTSUP
@@ -50,7 +44,7 @@
 /* A5/3&4                                                                   */
 /* ------------------------------------------------------------------------ */
 
-/*! \brief Generate a GSM A5/4 cipher stream
+/*! Generate a GSM A5/4 cipher stream
  *  \param[in] key 16 byte array for the key (as received from the SIM)
  *  \param[in] fn Frame number
  *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
@@ -79,7 +73,7 @@ _a5_4(const uint8_t *ck, uint32_t fn, ubit_t *dl, ubit_t *ul, bool fn_correct)
        }
 }
 
-/*! \brief Generate a GSM A5/3 cipher stream
+/*! Generate a GSM A5/3 cipher stream
  *  \param[in] key 8 byte array for the key (as received from the SIM)
  *  \param[in] fn Frame number
  *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
@@ -95,59 +89,10 @@ void
 _a5_3(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul, bool fn_correct)
 {
        uint8_t ck[16];
-       memcpy(ck, key, 8);
-       memcpy(ck + 8, key, 8);
+       osmo_c4(ck, key);
        /* internal function require 128 bit key so we expand by concatenating supplied 64 bit key */
        _a5_4(ck, fn, dl, ul, fn_correct);
 }
-
-/*! \brief Main method to generate a A5/x cipher stream
- *  \param[in] n Which A5/x method to use
- *  \param[in] key 8 or 16 (for a5/4) byte array for the key (as received from the SIM)
- *  \param[in] fn Frame number
- *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
- *  \param[out] ul Pointer to array of ubits to return Uplink cipher stream
- *  \returns 0 for success, -ENOTSUP for invalid cipher selection.
- *
- * Currently A5/[0-4] are supported.
- * Either (or both) of dl/ul can be NULL if not needed.
- */
-int
-osmo_a5(int n, const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
-{
-	switch (n)
-	{
-	case 0:
-		if (dl)
-			memset(dl, 0x00, 114);
-		if (ul)
-			memset(ul, 0x00, 114);
-		break;
-
-	case 1:
-		osmo_a5_1(key, fn, dl, ul);
-		break;
-
-	case 2:
-		osmo_a5_2(key, fn, dl, ul);
-		break;
-
-	case 3:
-		_a5_3(key, fn, dl, ul, true);
-		break;
-
-	case 4:
-		_a5_4(key, fn, dl, ul, true);
-		break;
-
-	default:
-		/* a5/[5..7] not supported here/yet */
-		return -ENOTSUP;
-	}
-
-	return 0;
-}
-
 
 /* ------------------------------------------------------------------------ */
 /* A5/1&2 common stuff                                                                     */
@@ -168,7 +113,7 @@ osmo_a5(int n, const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 #define A5_R3_TAPS	0x700080 /* x^23 + x^22 + x^21 + x^8 + 1 */
 #define A5_R4_TAPS	0x010800 /* x^17 + x^12 + 1 */
 
-/*! \brief Computes parity of a 32-bit word
+/*! Computes parity of a 32-bit word
  *  \param[in] x 32 bit word
  *  \return Parity bit (xor of all bits) as 0 or 1
  */
@@ -182,7 +127,7 @@ _a5_12_parity(uint32_t x)
 	return (0x6996 >> x) & 1;
 }
 
-/*! \brief Compute majority bit from 3 taps
+/*! Compute majority bit from 3 taps
  *  \param[in] v1 LFSR state ANDed with tap-bit
  *  \param[in] v2 LFSR state ANDed with tap-bit
  *  \param[in] v3 LFSR state ANDed with tap-bit
@@ -194,7 +139,7 @@ _a5_12_majority(uint32_t v1, uint32_t v2, uint32_t v3)
 	return (!!v1 + !!v2 + !!v3) >= 2;
 }
 
-/*! \brief Compute the next LFSR state
+/*! Compute the next LFSR state
  *  \param[in] r Current state
  *  \param[in] mask LFSR mask
  *  \param[in] taps LFSR taps
@@ -215,7 +160,7 @@ _a5_12_clock(uint32_t r, uint32_t mask, uint32_t taps)
 #define A51_R2_CLKBIT	0x000400
 #define A51_R3_CLKBIT	0x000400
 
-/*! \brief GSM A5/1 Clocking function
+/*! GSM A5/1 Clocking function
  *  \param[in] r Register state
  *  \param[in] force Non-zero value disable conditional clocking
  */
@@ -240,7 +185,7 @@ _a5_1_clock(uint32_t r[], int force)
 		r[2] = _a5_12_clock(r[2], A5_R3_MASK, A5_R3_TAPS);
 }
 
-/*! \brief GSM A5/1 Output function
+/*! GSM A5/1 Output function
  *  \param[in] r Register state
  *  \return The A5/1 output function bit
  */
@@ -252,7 +197,7 @@ _a5_1_get_output(uint32_t r[])
 		(r[2] >> (A5_R3_LEN-1));
 }
 
-/*! \brief Generate a GSM A5/1 cipher stream
+/*! Generate a GSM A5/1 cipher stream
  *  \param[in] key 8 byte array for the key (as received from the SIM)
  *  \param[in] fn Frame number
  *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
@@ -261,7 +206,7 @@ _a5_1_get_output(uint32_t r[])
  * Either (or both) of dl/ul can be NULL if not needed.
  */
 void
-osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
+_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 {
 	uint32_t r[3] = {0, 0, 0};
 	uint32_t fn_count;
@@ -314,6 +259,10 @@ osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 	}
 }
 
+void osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
+{
+	osmo_a5(1, key, fn, dl, ul);
+}
 
 /* ------------------------------------------------------------------------ */
 /* A5/2                                                                     */
@@ -323,7 +272,7 @@ osmo_a5_1(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 #define A52_R4_CLKBIT1	0x000008
 #define A52_R4_CLKBIT2	0x000080
 
-/*! \brief GSM A5/2 Clocking function
+/*! GSM A5/2 Clocking function
  *  \param[in] r Register state
  *  \param[in] force Non-zero value disable conditional clocking
  */
@@ -350,7 +299,7 @@ _a5_2_clock(uint32_t r[], int force)
 	r[3] = _a5_12_clock(r[3], A5_R4_MASK, A5_R4_TAPS);
 }
 
-/*! \brief GSM A5/2 Output function
+/*! GSM A5/2 Output function
  *  \param[in] r Register state
  *  \return The A5/2 output function bit
  */
@@ -369,7 +318,7 @@ _a5_2_get_output(uint32_t r[])
 	return b;
 }
 
-/*! \brief Generate a GSM A5/1 cipher stream
+/*! Generate a GSM A5/1 cipher stream
  *  \param[in] key 8 byte array for the key (as received from the SIM)
  *  \param[in] fn Frame number
  *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
@@ -378,7 +327,7 @@ _a5_2_get_output(uint32_t r[])
  * Either (or both) of dl/ul can be NULL if not needed.
  */
 void
-osmo_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
+_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 {
 	uint32_t r[4] = {0, 0, 0, 0};
 	uint32_t fn_count;
@@ -436,6 +385,58 @@ osmo_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
 		if (ul)
 			ul[i] = _a5_2_get_output(r);
 	}
+}
+
+void osmo_a5_2(const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
+{
+	osmo_a5(2, key, fn, dl, ul);
+}
+
+/*! Main method to generate a A5/x cipher stream
+ *  \param[in] n Which A5/x method to use
+ *  \param[in] key 8 or 16 (for a5/4) byte array for the key (as received from the SIM)
+ *  \param[in] fn Frame number
+ *  \param[out] dl Pointer to array of ubits to return Downlink cipher stream
+ *  \param[out] ul Pointer to array of ubits to return Uplink cipher stream
+ *  \returns 0 for success, -ENOTSUP for invalid cipher selection.
+ *
+ * Currently A5/[0-4] are supported.
+ * Either (or both) of dl/ul can be NULL if not needed.
+ */
+int
+osmo_a5(int n, const uint8_t *key, uint32_t fn, ubit_t *dl, ubit_t *ul)
+{
+	switch (n)
+	{
+	case 0:
+		if (dl)
+			memset(dl, 0x00, 114);
+		if (ul)
+			memset(ul, 0x00, 114);
+		break;
+
+	case 1:
+		_a5_1(key, fn, dl, ul);
+		break;
+
+	case 2:
+		_a5_2(key, fn, dl, ul);
+		break;
+
+	case 3:
+		_a5_3(key, fn, dl, ul, true);
+		break;
+
+	case 4:
+		_a5_4(key, fn, dl, ul, true);
+		break;
+
+	default:
+		/* a5/[5..7] not supported here/yet */
+		return -ENOTSUP;
+	}
+
+	return 0;
 }
 
 /*! @} */

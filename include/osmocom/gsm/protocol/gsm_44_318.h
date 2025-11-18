@@ -1,8 +1,10 @@
+/*! \file gsm_44_318.h
+ * Definitions according to 3GPP TS 44.318 6.8.0 Release 6. */
+
 #pragma once
 
 #include <stdint.h>
-
-/* Definitions according to 3GPP TS 44.318 6.8.0 Release 6 */
+#include <osmocom/core/endian.h>
 
 /* Table 11.1.1.2.1: Protocol Discriminator */
 enum gan_pdisc {
@@ -153,15 +155,24 @@ enum gan_iei {
 
 /* 11.1.1 GA-RC and GA-CSR Message header IE */
 struct gan_rc_csr_hdr {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint16_t len;
 	uint8_t pdisc:4,
 		skip_ind:4;
 	uint8_t msg_type;
 	uint8_t data[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint16_t len;
+	uint8_t skip_ind:4, pdisc:4;
+	uint8_t msg_type;
+	uint8_t data[0];
+#endif
 } __attribute__((packed));
 
 /* 11.2.14.1: GAN Control Channel Description IE */
 struct gan_cch_desc_ie {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t spare:1,
 		ecmc:1,
 		nmo:2,
@@ -169,15 +180,6 @@ struct gan_cch_desc_ie {
 		dtm:1,
 		att:1,
 		mscr:1;
-#if 0
-	uint8_t mscr:1,
-		att:1,
-		dtm:1,
-		gprs:1,
-		nmo:2,
-		ecmc:1,
-		spare:1;
-#endif
 	uint8_t t3212;
 	uint8_t rac;
 	uint8_t sgsnr:1,
@@ -186,13 +188,13 @@ struct gan_cch_desc_ie {
 		pfcfm:1,
 		tgecs:2,
 		spare2:2;
-#if 0
-	uint8_t spare2:2,
-		tgecs:2,
-		pfcfm:1,
-		re:1,
-		ecmp:1,
-		sgsnr:1;
-#endif
 	uint8_t access_class[2];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t mscr:1, att:1, dtm:1, gprs:1, nmo:2, ecmc:1, spare:1;
+	uint8_t t3212;
+	uint8_t rac;
+	uint8_t spare2:2, tgecs:2, pfcfm:1, re:1, ecmp:1, sgsnr:1;
+	uint8_t access_class[2];
+#endif
 } __attribute__((packed));

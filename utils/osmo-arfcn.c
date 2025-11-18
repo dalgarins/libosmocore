@@ -1,4 +1,5 @@
-/* Utility program for ARFCN / frequency calculations */
+/*! \file osmo-arfcn.c
+ * Utility program for ARFCN / frequency calculations. */
 /*
  * (C) 2011 by Harald Welte <laforge@gnumonks.org>
  *
@@ -13,10 +14,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -61,6 +58,7 @@ static int arfcn2freq(int arfcn)
 static int freq2arfcn(int freq10, int uplink)
 {
 	uint16_t arfcn;
+	enum gsm_band band;
 
 	if (uplink != 0 && uplink != 1) {
 		fprintf(stderr, "Need to specify uplink or downlink\n");
@@ -74,8 +72,13 @@ static int freq2arfcn(int freq10, int uplink)
 		return -EINVAL;
 	}
 
+	if (gsm_arfcn2band_rc(arfcn, &band) < 0) {
+		fprintf(stderr, "ARFCN contains no valid band\n");
+		return -EINVAL;
+	}
+
 	printf("%s: ARFCN %4d\n",
-		gsm_band_name(gsm_arfcn2band(arfcn)),
+		gsm_band_name(band),
 		arfcn & ~ARFCN_FLAG_MASK);
 	return 0;
 }
@@ -90,10 +93,10 @@ int main(int argc, char **argv)
 {
 	int arfcn, freq, pcs = 0, uplink = -1;
 	int opt;
-	char *param;
+	char *param = NULL;
 	enum program_mode mode = MODE_NONE;
 
-	while ((opt = getopt(argc, argv, "pa:f:ud")) != -1) {
+	while ((opt = getopt(argc, argv, "pa:f:udh")) != -1) {
 		switch (opt) {
 		case 'p':
 			pcs = 1;
@@ -119,6 +122,11 @@ int main(int argc, char **argv)
 		default:
 			break;
 		}
+	}
+
+	if (argc > optind) {
+		fprintf(stderr, "Unsupported positional arguments in command line\n");
+		exit(2);
 	}
 
 	switch (mode) {

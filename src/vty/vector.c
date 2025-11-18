@@ -1,5 +1,9 @@
-/* Generic vector interface routine
+/*! \file vector.c
+ * Generic vector interface routine. */
+/*
  * Copyright (C) 1997 Kunihiro Ishiguro
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This file is part of GNU Zebra.
  *
@@ -12,11 +16,6 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with GNU Zebra; see the file COPYING.  If not, write to the Free
- * Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
- * 02111-1307, USA.
  */
 
 #include <stdlib.h>
@@ -26,6 +25,11 @@
 #include <osmocom/vty/vty.h>
 #include <osmocom/core/talloc.h>
 #include <string.h>
+
+/*! \addtogroup vector
+ *  @{
+ *  Generic vector routines, used by VTY internally
+ */
 
 void *tall_vty_vec_ctx;
 
@@ -190,3 +194,5 @@ unsigned int vector_count(vector v)
 
 	return count;
 }
+
+/*! @} */

@@ -1,5 +1,6 @@
+/*! \file milenage.c
+ * 3GPP AKA - Milenage algorithm (3GPP TS 35.205, .206, .207, .208) */
 /*
- * 3GPP AKA - Milenage algorithm (3GPP TS 35.205, .206, .207, .208)
  * Copyright (c) 2006-2007 <j@w1.fi>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -10,6 +11,8 @@
  * license.
  *
  * See README and COPYING for more details.
+ *
+ * SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
  *
  * This file implements an example authentication algorithm defined for 3GPP
  * AKA. This can be used to implement a simple HLR/AuC into hlr_auc_gw to allow
@@ -26,7 +29,7 @@
 #include "common.h"
 #include "aes_wrap.h"
 #include "milenage.h"
-
+#include <osmocom/crypt/auth.h>
 
 /**
  * milenage_f1 - Milenage f1 and f1* algorithms
@@ -241,20 +244,13 @@ int milenage_auts(const u8 *opc, const u8 *k, const u8 *_rand, const u8 *auts,
 int gsm_milenage(const u8 *opc, const u8 *k, const u8 *_rand, u8 *sres, u8 *kc)
 {
 	u8 res[8], ck[16], ik[16];
-	int i;
 
 	if (milenage_f2345(opc, k, _rand, res, ck, ik, NULL, NULL))
 		return -1;
 
-	for (i = 0; i < 8; i++)
-		kc[i] = ck[i] ^ ck[i + 8] ^ ik[i] ^ ik[i + 8];
+	osmo_auth_c3(kc, ck, ik);
+	osmo_auth_c2(sres, res, sizeof(res), 1);
 
-#ifdef GSM_MILENAGE_ALT_SRES
-	os_memcpy(sres, res, 4);
-#else /* GSM_MILENAGE_ALT_SRES */
-	for (i = 0; i < 4; i++)
-		sres[i] = res[i] ^ res[i + 4];
-#endif /* GSM_MILENAGE_ALT_SRES */
 	return 0;
 }
 

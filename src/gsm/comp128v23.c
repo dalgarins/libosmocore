@@ -1,13 +1,17 @@
-/* COMP128 version 2 and 3 implementation
+/*! \file comp128v23.c
+ * COMP128 version 2 and 3 implementation, common algorithm used for GSM Authentication (A3/A8).
  *
- * This code is a C conversion of the original code from
- * http://www.hackingprojects.net/
- *
+ * This code is a C conversion of the original code by Tamas Jos <info@skelsec.com> from:
+ * - original (out of service): http://www.hackingprojects.net/
+ * - original (archive): https://web.archive.org/web/20130730113347/http://www.hackingprojects.net/
+ * - new site: https://github.com/skelsec/COMP128
  */
-
-/* (C) 2013 by Kévin Redon <kevredon@mail.tsaitgaist.info>
+/*
+ * (C) 2013 by Kévin Redon <kevredon@mail.tsaitgaist.info>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,14 +23,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <stdint.h>
 #include <string.h>
+
+/*! \addtogroup auth
+ *  @{
+ * \file comp128v23.c */
 
 static const uint8_t table0[256] = {
 	197, 235, 60, 151, 98, 96, 3, 100, 248, 118, 42, 117, 172, 211, 181, 203, 61,
@@ -101,6 +105,12 @@ _comp128v23_internal(uint8_t *output, const uint8_t *kxor, const uint8_t *rand)
 	}
 }
 
+/*! Perform COMP128v3 algorithm
+ *  \param[in] ki Secret Key K(i) of subscriber
+ *  \param[in] rand Random Challenge
+ *  \param[out] sres user-supplied buffer for storing computed SRES value
+ *  \param[out] kc user-supplied buffer for storing computed Kc value
+ *  \returns 0 */
 int
 comp128v3(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 {
@@ -147,6 +157,12 @@ comp128v3(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 	return 0;
 }
 
+/*! Perform COMP128v2 algorithm
+ *  \param[in] ki Secret Key K(i) of subscriber
+ *  \param[in] rand Random Challenge
+ *  \param[out] sres user-supplied buffer for storing computed SRES value
+ *  \param[out] kc user-supplied buffer for storing computed Kc value
+ *  \returns 0 */
 int
 comp128v2(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 {
@@ -155,3 +171,5 @@ comp128v2(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 	kc[6] &= 0xfc;
 	return r;
 }
+
+/*! @} */

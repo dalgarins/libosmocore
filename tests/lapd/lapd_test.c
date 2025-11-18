@@ -1,8 +1,10 @@
 /*
  * (C) 2011 by Holger Hans Peter Freyther
  * (C) 2011 by On-Waves
- * (C) 2014 by Daniel Willmann <dwillmann@sysmocom.de>
+ * (C) 2014 by sysmocom - s.f.m.c. GmbH, Author: Daniel Willmann <dwillmann@sysmocom.de>
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,10 +16,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <osmocom/core/application.h>
@@ -27,6 +25,7 @@
 #include <osmocom/gsm/rsl.h>
 
 #include <errno.h>
+#include <talloc.h>
 
 #include <string.h>
 
@@ -51,7 +50,8 @@ static struct msgb *msgb_from_array(const uint8_t *data, int len)
 {
 	struct msgb *msg = msgb_alloc_headroom(4096, 128, "data");
 	msg->l3h = msgb_put(msg, len);
-	memcpy(msg->l3h, data, len);
+	if (data && len)
+		memcpy(msg->l3h, data, len);
 	return msg;
 }
 
@@ -63,10 +63,21 @@ static const uint8_t cm[] = {
 	0x29, 0x47, 0x80, 0x00, 0x00, 0x00, 0x00, 0x80,
 };
 
-static const uint8_t ua[] = {
+static const uint8_t ua_cm[] = {
 	0x01, 0x73, 0x41, 0x05, 0x24, 0x31, 0x03, 0x50,
 	0x18, 0x93, 0x08, 0x29, 0x47, 0x80, 0x00, 0x00,
 	0x00, 0x00, 0x80, 0x2b, 0x2b, 0x2b, 0x2b
+};
+
+static const uint8_t pr[] = {
+	0x06, 0x27, 0x07, 0x03, 0x50, 0x58, 0x92, 0x05,
+	0xf4, 0x44, 0x59, 0xba, 0x63,
+};
+
+static const uint8_t ua_pr[] = {
+	0x01, 0x73, 0x35, 0x06, 0x27, 0x07, 0x03, 0x50,
+	0x58, 0x92, 0x05, 0xf4, 0x44, 0x59, 0xba, 0x63,
+	0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b,
 };
 
 static const uint8_t mm[] = {
@@ -173,6 +184,7 @@ static int send(struct msgb *in_msg, struct lapdm_channel *chan)
 	/* LAPDm requires those... */
 	pp.u.data.chan_nr = 0;
 	pp.u.data.link_id = 0;
+	pp.u.data.fn = 0;
         /* feed into the LAPDm code of libosmogsm */
         rc = lapdm_phsap_up(&pp.oph, &chan->lapdm_dcch);
 	OSMO_ASSERT(rc == 0 || rc == -EBUSY);
@@ -195,6 +207,7 @@ static int send_buf(const uint8_t *buf, size_t len, struct lapdm_channel *chan)
 	/* LAPDm requires those... */
 	pp.u.data.chan_nr = 0;
 	pp.u.data.link_id = 0;
+	pp.u.data.fn = 0;
         /* feed into the LAPDm code of libosmogsm */
         rc = lapdm_phsap_up(&pp.oph, &chan->lapdm_dcch);
 	OSMO_ASSERT(rc == 0 || rc == -EBUSY);
@@ -302,8 +315,8 @@ static int dequeue_prim(struct lapdm_entity *le, struct osmo_phsap_prim *pp,
 	/* Take message from queue */
 	rc = lapdm_phsap_dequeue_prim(le, pp);
 
-	fprintf(stderr, "dequeue: got rc %d: %s\n", rc,
-		rc <= 0 ? strerror(-rc) : "-");
+	printf("lapdm_phsap_dequeue_prim(): got rc %d: %s\n",
+	       rc, rc <= 0 ? strerror(-rc) : "-");
 
 	if (rc < 0)
 		return rc;
@@ -313,15 +326,14 @@ static int dequeue_prim(struct lapdm_entity *le, struct osmo_phsap_prim *pp,
 		l3_len = msgb_l3len(pp->oph.msg);
 		l2_header_len -= l3_len;
 	} else
-		fprintf(stderr, "MSGB: L3 is undefined\n");
+		printf("MSGB: L3 is undefined\n");
 
 	if (l2_header_len < 0 || l2_header_len > pp->oph.msg->data_len) {
-		fprintf(stderr,
-			"MSGB inconsistent: data = %p, l2 = %p, l3 = %p, tail = %p\n",
-			pp->oph.msg->data,
-			pp->oph.msg->l2h,
-			pp->oph.msg->l3h,
-			pp->oph.msg->tail);
+		printf("MSGB inconsistent: data = %p, l2 = %p, l3 = %p, tail = %p\n",
+		       pp->oph.msg->data,
+		       pp->oph.msg->l2h,
+		       pp->oph.msg->l3h,
+		       pp->oph.msg->tail);
 		l2_header_len = -1;
 	}
 
@@ -347,19 +359,12 @@ static int ms_to_bts_tx_cb(struct msgb *msg, struct lapdm_entity *le, void *_ctx
 		struct abis_rsl_rll_hdr hdr;
 
 		printf("MS: Verifying incoming primitive.\n");
-		OSMO_ASSERT(msg->len == sizeof(struct abis_rsl_rll_hdr) + 3);
+		OSMO_ASSERT(msg->len == sizeof(struct abis_rsl_rll_hdr));
 
 		/* verify the header */
 		memset(&hdr, 0, sizeof(hdr));
 		rsl_init_rll_hdr(&hdr, RSL_MT_EST_CONF);
-		hdr.c.msg_discr |= ABIS_RSL_MDISC_TRANSP;
 		OSMO_ASSERT(memcmp(msg->data, &hdr, sizeof(hdr)) == 0);
-
-		/* Verify the added RSL_IE_L3_INFO but we have a bug here */
-		OSMO_ASSERT(msg->data[6] == RSL_IE_L3_INFO);
-		#warning "RSL_IE_L3_INFO 16 bit length is wrong"
-		/* This should be okay but it is actually 0x0, 0x9c on ia-32 */
-		/* OSMO_ASSERT(msg->data[7] == 0x0 && msg->data[8] == 0x0); */
 	} else if (state->ms_read == 1) {
 		printf("MS: Verifying incoming MM message: %d\n", msgb_l3len(msg));
 		OSMO_ASSERT(msgb_l3len(msg) == 3);
@@ -373,7 +378,7 @@ static int ms_to_bts_tx_cb(struct msgb *msg, struct lapdm_entity *le, void *_ctx
 	return 0;
 }
 
-static void test_lapdm_polling()
+static void test_lapdm_polling(void)
 {
 	printf("I do some very simple LAPDm test.\n");
 
@@ -467,7 +472,7 @@ static void test_lapdm_polling()
 	lapdm_channel_exit(&ms_to_bts_channel);
 }
 
-static void test_lapdm_contention_resolution()
+static void test_lapdm_contention_resolution(void)
 {
 	printf("I test contention resultion by having two mobiles collide and "
 		"first mobile repeating SABM.\n");
@@ -494,13 +499,14 @@ static void test_lapdm_contention_resolution()
 	send_sabm(&bts_to_ms_channel, 0, cm, sizeof(cm));
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
-	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua, ARRAY_SIZE(ua)) == 0);
+	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua_cm, ARRAY_SIZE(ua_cm)) == 0);
+	msgb_free(pp.oph.msg);
 
 	/* Send SABM MS 2, we must get nothing, due to collision */
 	cm2 = malloc(sizeof(cm));
 	memcpy(cm2, cm, sizeof(cm));
 	cm2[0] += 1;
-	send_sabm(&bts_to_ms_channel, 0, cm2, sizeof(cm2));
+	send_sabm(&bts_to_ms_channel, 0, cm2, sizeof(cm));
 	free(cm2);
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	OSMO_ASSERT(rc == -ENODEV);
@@ -509,7 +515,8 @@ static void test_lapdm_contention_resolution()
 	send_sabm(&bts_to_ms_channel, 0, cm, sizeof(cm));
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
-	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua, ARRAY_SIZE(ua)) == 0);
+	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua_cm, ARRAY_SIZE(ua_cm)) == 0);
+	msgb_free(pp.oph.msg);
 
 	/* clean up */
 	lapdm_channel_exit(&bts_to_ms_channel);
@@ -518,7 +525,7 @@ static void test_lapdm_contention_resolution()
 	lapdm_channel_exit(&bts_to_ms_channel);
 }
 
-static void test_lapdm_early_release()
+static void test_lapdm_early_release(void)
 {
 	printf("I test RF channel release of an unestablished channel.\n");
 
@@ -569,10 +576,11 @@ static void lapdm_establish(const uint8_t *est_req, size_t est_req_size)
 	lapdm_channel_set_l1(&bts_to_ms_channel, NULL, &test_state);
 	lapdm_channel_set_l3(&bts_to_ms_channel, bts_to_ms_tx_cb, &test_state);
 
-	/* Send the release request */
+	/* Send the establish request */
 	msg = create_est_req(est_req, est_req_size);
 	rc = lapdm_rslms_recvmsg(msg, &bts_to_ms_channel);
-	fprintf(stderr, "recvmsg: got rc %d: %s\n", rc, rc <= 0 ? strerror(-rc) : "???");
+	printf("lapdm_rslms_recvmsg(): got rc %d: %s\n",
+	       rc, rc <= 0 ? strerror(-rc) : "???");
 	OSMO_ASSERT(rc == 0);
 
 	/* Take message from queue */
@@ -594,9 +602,10 @@ static void lapdm_establish(const uint8_t *est_req, size_t est_req_size)
 
 	/* idempotent */
 	lapdm_channel_exit(&bts_to_ms_channel);
+	msgb_free(msg);
 }
 
-static void test_lapdm_establishment()
+static void test_lapdm_establishment(void)
 {
 	printf("I test RF channel establishment.\n");
 	printf("Testing SAPI3/SDCCH\n");
@@ -670,7 +679,7 @@ static void dump_queue(struct llist_head *head)
 	printf("\n");
 }
 
-static void test_lapdm_desync()
+static void test_lapdm_desync(void)
 {
 	printf("I test if desync problems exist in LAPDm\n");
 
@@ -698,7 +707,8 @@ static void test_lapdm_desync()
 
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
-	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua, ARRAY_SIZE(ua)) == 0);
+	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua_cm, ARRAY_SIZE(ua_cm)) == 0);
+	msgb_free(pp.oph.msg);
 
 	printf("\nSending Classmark Change\n");
 	send_buf(cm_chg, sizeof(cm_chg), &bts_to_ms_channel);
@@ -715,6 +725,7 @@ static void test_lapdm_desync()
 	printf("\nSending GPRS Suspend Request\n");
 	send_buf(gprs_susp, sizeof(gprs_susp), &bts_to_ms_channel);
 	dump_queue(&dl->dl.tx_queue);
+	msgb_free(pp.oph.msg);
 
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
@@ -723,10 +734,12 @@ static void test_lapdm_desync()
 	printf("\nSending Cipher Mode Complete\n");
 	send_buf(cipher_compl, sizeof(cipher_compl), &bts_to_ms_channel);
 	dump_queue(&dl->dl.tx_queue);
+	msgb_free(pp.oph.msg);
 
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
 	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, cipher_compl_ack, ARRAY_SIZE(cipher_compl_ack)) == 0);
+	msgb_free(pp.oph.msg);
 
 	printf("\nEstablishing SAPI=3\n");
 	send_sabm(&bts_to_ms_channel, 3, NULL, 0);
@@ -735,6 +748,7 @@ static void test_lapdm_desync()
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
 	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, ua_sms, ARRAY_SIZE(ua_sms)) == 0);
+	msgb_free(pp.oph.msg);
 
 	printf("\nSending CP-DATA\n");
 	send_buf(cp_data_1, sizeof(cp_data_1), &bts_to_ms_channel);
@@ -743,6 +757,7 @@ static void test_lapdm_desync()
 	rc = dequeue_prim(&bts_to_ms_channel.lapdm_dcch, &pp, "DCCH");
 	CHECK_RC(rc);
 	OSMO_ASSERT(memcmp(pp.oph.msg->l2h, cp_data_1_ack, ARRAY_SIZE(cp_data_1_ack)) == 0);
+	msgb_free(pp.oph.msg);
 
 	/* clean up */
 	lapdm_channel_exit(&bts_to_ms_channel);
@@ -751,9 +766,69 @@ static void test_lapdm_desync()
 	lapdm_channel_exit(&bts_to_ms_channel);
 }
 
+static void test_lapdm_sapi_prio(void)
+{
+	static const uint8_t dl_sabm[] = { 0x0f, 0x3f, 0x01 };
+	struct osmo_phsap_prim pp1, pp2;
+	struct lapdm_channel lc = { };
+	struct msgb *msg;
+	int rc;
+
+	printf("\n=== I test SAPI0/SAPI3 prioritization ===\n\n");
+
+	/* BTS to MS in polling mode */
+	lapdm_channel_init(&lc, LAPDM_MODE_BTS);
+	lapdm_channel_set_flags(&lc, LAPDM_ENT_F_POLLING_ONLY);
+	lapdm_channel_set_l1(&lc, NULL, NULL);
+	lapdm_channel_set_l3(&lc, bts_to_ms_dummy_tx_cb, NULL);
+
+	/* MS establishes a SAPI=0 link by sending func=SABM on SDCCH */
+	printf("MS is establishing a SAPI=0 link\n");
+	send_sabm(&lc, 0, pr, sizeof(pr));
+
+	/* BTS establishes a SAPI=3 link by sending func=SABM on SDCCH */
+	msg = create_est_req(est_req_sdcch_sapi3, sizeof(est_req_sdcch_sapi3));
+	printf("BTS is establishing a SAPI=3 link\n");
+	rc = lapdm_rslms_recvmsg(msg, &lc);
+	OSMO_ASSERT(rc == 0);
+
+	/* Make sure that we get func=UA on SDCCH from the BTS first */
+	rc = dequeue_prim(&lc.lapdm_dcch, &pp1, "DCCH");
+	CHECK_RC(rc);
+
+	/* Contention resolution is completed, we should get func=SABM now */
+	rc = dequeue_prim(&lc.lapdm_dcch, &pp2, "DCCH");
+	CHECK_RC(rc);
+
+	/* Check the actual message payload */
+	rc = memcmp(pp1.oph.msg->l2h, ua_pr, sizeof(ua_pr));
+	printf("Checking the func=UA message: %s\n", rc == 0 ? "OK" : "FAIL");
+	rc = memcmp(pp2.oph.msg->l2h, dl_sabm, sizeof(dl_sabm));
+	printf("Checking the func=SABM message: %s\n", rc == 0 ? "OK" : "FAIL");
+
+	msgb_free(pp1.oph.msg);
+	msgb_free(pp2.oph.msg);
+
+	/* Make sure that the queues are empty now */
+	printf("\nChecking whether the DCCH/SACCH queues are empty\n");
+	rc = dequeue_prim(&lc.lapdm_dcch, &pp1, "DCCH");
+	OSMO_ASSERT(rc < 0);
+	rc = dequeue_prim(&lc.lapdm_dcch, &pp2, "SACCH");
+	OSMO_ASSERT(rc < 0);
+
+	/* Clean up */
+	lapdm_channel_exit(&lc);
+
+	/* Check if exit is idempotent */
+	lapdm_channel_exit(&lc);
+}
+
 int main(int argc, char **argv)
 {
-	osmo_init_logging(&info);
+	void *ctx = talloc_named_const(NULL, 0, "lapd_test");
+	osmo_init_logging2(ctx, &info);
+
+	msgb_talloc_ctx_init(ctx, 0);
 
 	/* Prevent the test from segfaulting */
 	dummy_l1_header_len = 0;
@@ -764,6 +839,7 @@ int main(int argc, char **argv)
 	test_lapdm_contention_resolution();
 	test_lapdm_establishment();
 	test_lapdm_desync();
+	test_lapdm_sapi_prio();
 
 	printf("Success.\n");
 

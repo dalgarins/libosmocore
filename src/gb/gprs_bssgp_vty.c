@@ -1,8 +1,11 @@
-/* VTY interface for our GPRS BSS Gateway Protocol (BSSGP) implementation */
-
-/* (C) 2010 by Harald Welte <laforge@gnumonks.org>
+/*! \file gprs_bssgp_vty.c
+ * VTY interface for our GPRS BSS Gateway Protocol (BSSGP) implementation. */
+/*
+ * (C) 2010 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,6 +36,7 @@
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/gprs/gprs_ns.h>
 #include <osmocom/gprs/gprs_bssgp.h>
+#include <osmocom/gprs/gprs_bssgp_bss.h>
 
 #include <osmocom/vty/vty.h>
 #include <osmocom/vty/command.h>
@@ -40,29 +44,21 @@
 #include <osmocom/vty/telnet_interface.h>
 #include <osmocom/vty/misc.h>
 
-#include "common_vty.h"
-
-/* FIXME: this should go to some common file as it is copied
- * in vty_interface.c of the BSC */
-static const struct value_string gprs_bssgp_timer_strs[] = {
-	{ 0, NULL }
-};
-
 static void log_set_bvc_filter(struct log_target *target,
 				struct bssgp_bvc_ctx *bctx)
 {
 	if (bctx) {
-		target->filter_map |= (1 << FLT_BVC);
-		target->filter_data[FLT_BVC] = bctx;
-	} else if (target->filter_data[FLT_NSVC]) {
-		target->filter_map = ~(1 << FLT_BVC);
-		target->filter_data[FLT_BVC] = NULL;
+		target->filter_map |= (1 << LOG_FLT_GB_BVC);
+		target->filter_data[LOG_FLT_GB_BVC] = bctx;
+	} else if (target->filter_data[LOG_FLT_GB_BVC]) {
+		target->filter_map = ~(1 << LOG_FLT_GB_BVC);
+		target->filter_data[LOG_FLT_GB_BVC] = NULL;
 	}
 }
 
 static struct cmd_node bssgp_node = {
 	L_BSSGP_NODE,
-	"%s(bssgp)#",
+	"%s(config-bssgp)# ",
 	1,
 };
 
@@ -83,11 +79,9 @@ DEFUN(cfg_bssgp, cfg_bssgp_cmd,
 
 static void dump_bvc(struct vty *vty, struct bssgp_bvc_ctx *bvc, int stats)
 {
-	vty_out(vty, "NSEI %5u, BVCI %5u, RA-ID: %u-%u-%u-%u, CID: %u, "
-		"STATE: %s%s", bvc->nsei, bvc->bvci, bvc->ra_id.mcc,
-		bvc->ra_id.mnc, bvc->ra_id.lac, bvc->ra_id.rac, bvc->cell_id,
-		bvc->state & BVC_S_BLOCKED ? "BLOCKED" : "UNBLOCKED",
-		VTY_NEWLINE);
+	vty_out(vty, "NSEI %5u, BVCI %5u, RA-ID: %s, CID: %u, "
+		"STATE: %s%s", bvc->nsei, bvc->bvci, osmo_rai_name(&bvc->ra_id),
+		bvc->cell_id, bvc->state & BVC_S_BLOCKED ? "BLOCKED" : "UNBLOCKED", VTY_NEWLINE);
 
 	if (stats) {
 		struct bssgp_flow_control *fc = bvc->fc;
@@ -111,6 +105,30 @@ static void dump_bssgp(struct vty *vty, int stats)
 	llist_for_each_entry(bvc, &bssgp_bvc_ctxts, list) {
 		dump_bvc(vty, bvc, stats);
 	}
+}
+
+DEFUN(bvc_reset, bvc_reset_cmd,
+      "bssgp bvc nsei <0-65535> bvci <0-65535> reset",
+      "Initiate BVC RESET procedure for a given NSEI and BVCI\n"
+      "Filter based on BSSGP Virtual Connection\n"
+      "NSEI of the BVC to be filtered\n"
+      "Network Service Entity Identifier (NSEI)\n"
+      "BVCI of the BVC to be filtered\n"
+      "BSSGP Virtual Connection Identifier (BVCI)\n"
+      "Perform reset procedure\n")
+{
+	int r;
+	uint16_t nsei = atoi(argv[0]), bvci = atoi(argv[1]);
+	struct bssgp_bvc_ctx *bvc = btsctx_by_bvci_nsei(bvci, nsei);
+	if (!bvc) {
+		vty_out(vty, "No BVC for NSEI %d BVCI %d%s", nsei, bvci,
+			VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	r = bssgp_tx_bvc_reset(bvc, bvci, BSSGP_CAUSE_OML_INTERV);
+	vty_out(vty, "Sent BVC RESET for NSEI %d BVCI %d: %d%s", nsei, bvci, r,
+		VTY_NEWLINE);
+	return CMD_SUCCESS;
 }
 
 #define BSSGP_STR "Show information about the BSSGP protocol\n"
@@ -161,39 +179,42 @@ DEFUN(logging_fltr_bvc,
 	"BVCI of the BVC to be filtered\n"
 	"BSSGP Virtual Connection Identifier (BVCI)\n")
 {
-	struct log_target *tgt = osmo_log_vty2tgt(vty);
+	struct log_target *tgt;
 	struct bssgp_bvc_ctx *bvc;
 	uint16_t nsei = atoi(argv[0]);
 	uint16_t bvci = atoi(argv[1]);
 
-	if (!tgt)
+	log_tgt_mutex_lock();
+	tgt = osmo_log_vty2tgt(vty);
+	if (!tgt) {
+		log_tgt_mutex_unlock();
 		return CMD_WARNING;
+	}
 
 	bvc = btsctx_by_bvci_nsei(bvci, nsei);
 	if (!bvc) {
 		vty_out(vty, "No BVC by that identifier%s", VTY_NEWLINE);
+		log_tgt_mutex_unlock();
 		return CMD_WARNING;
 	}
 
 	log_set_bvc_filter(tgt, bvc);
+	log_tgt_mutex_unlock();
 	return CMD_SUCCESS;
 }
 
 int bssgp_vty_init(void)
 {
-	install_element_ve(&show_bssgp_cmd);
-	install_element_ve(&show_bssgp_stats_cmd);
-	install_element_ve(&show_bvc_cmd);
-	install_element_ve(&logging_fltr_bvc_cmd);
+	install_lib_element_ve(&show_bssgp_cmd);
+	install_lib_element_ve(&show_bssgp_stats_cmd);
+	install_lib_element_ve(&show_bvc_cmd);
+	install_lib_element_ve(&logging_fltr_bvc_cmd);
+	install_lib_element_ve(&bvc_reset_cmd);
 
-	install_element(CFG_LOG_NODE, &logging_fltr_bvc_cmd);
+	install_lib_element(CFG_LOG_NODE, &logging_fltr_bvc_cmd);
 
-	install_element(CONFIG_NODE, &cfg_bssgp_cmd);
+	install_lib_element(CONFIG_NODE, &cfg_bssgp_cmd);
 	install_node(&bssgp_node, config_write_bssgp);
-	install_default(L_BSSGP_NODE);
-	install_element(L_BSSGP_NODE, &libgb_exit_cmd);
-	install_element(L_BSSGP_NODE, &libgb_end_cmd);
-	//install_element(L_BSSGP_NODE, &cfg_bssgp_timer_cmd);
 
 	return 0;
 }

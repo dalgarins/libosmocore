@@ -1,3 +1,5 @@
+/*! \file gprs_bssgp.h */
+
 #pragma once
 
 #include <stdint.h>
@@ -8,11 +10,32 @@
 #include <osmocom/gsm/prim.h>
 
 #include <osmocom/gprs/protocol/gsm_08_18.h>
+#include <osmocom/gprs/protocol/gsm_24_301.h>
+#include <osmocom/gprs/gprs_bssgp_rim.h>
 
 /* gprs_bssgp_util.c */
+
+#define BSSGP_PDUF_UL	0x0001	/* PDU may occur in uplink */
+#define BSSGP_PDUF_DL	0x0002	/* PDU may occur in downlink */
+#define BSSGP_PDUF_SIG	0x0004	/* PDU may occur on Signaling BVC */
+#define BSSGP_PDUF_PTP	0x0008	/* PDU may occur on PTP BVC */
+#define BSSGP_PDUF_PTM	0x0010	/* PDU may occur on PTM BVC */
+
+extern const struct osmo_tlv_prot_def osmo_pdef_bssgp;
+
+/*! return the PDU type flags (UL/DL/SIG/PTP/PTM) of specified PDU type */
+static inline uint32_t bssgp_pdu_type_flags(uint8_t pdu_type) {
+	return osmo_tlv_prot_msgt_flags(&osmo_pdef_bssgp, pdu_type);
+}
+
+typedef int (*bssgp_bvc_send)(void *ctx, struct msgb *msg);
 extern struct gprs_ns_inst *bssgp_nsi;
+void bssgp_set_bssgp_callback(bssgp_bvc_send ns_send, void *data);
 struct msgb *bssgp_msgb_alloc(void);
+struct msgb *bssgp_msgb_copy(const struct msgb *msg, const char *name);
 const char *bssgp_cause_str(enum gprs_bssgp_cause cause);
+const char *bssgp_pdu_str(enum bssgp_pdu_type pdu);
+int bssgp_tx_bvc_reset_nsei_bvci(uint16_t nsei, uint16_t bvci, enum gprs_bssgp_cause cause, const struct gprs_ra_id *ra_id, uint16_t cell_id);
 /* Transmit a simple response such as BLOCK/UNBLOCK/RESET ACK/NACK */
 int bssgp_tx_simple_bvci(uint8_t pdu_type, uint16_t nsei,
 			 uint16_t bvci, uint16_t ns_bvci);
@@ -34,6 +57,8 @@ enum bssgp_prim {
 	PRIM_NM_BVC_BLOCK,
 	PRIM_NM_BVC_UNBLOCK,
 	PRIM_NM_STATUS,
+
+        PRIM_BSSGP_RIM_PDU_TRANSFER,
 };
 
 struct osmo_bssgp_prim {
@@ -51,12 +76,13 @@ struct osmo_bssgp_prim {
 		struct {
 			uint8_t suspend_ref;
 		} resume;
+		struct bssgp_ran_information_pdu rim_pdu;
 	} u;
 };
 
 /* gprs_bssgp.c */
 
-/*! \brief BSSGP flow control (SGSN side) According to Section 8.2 */
+/*! BSSGP flow control (SGSN side) According to Section 8.2 */
 struct bssgp_flow_control {
 	uint32_t bucket_size_max;	/*!< maximum size of the bucket (octets) */
 	uint32_t bucket_leak_rate; 	/*!< leak rate of the bucket (octets/sec) */
@@ -99,15 +125,21 @@ struct bssgp_bvc_ctx {
 	/*! default bucket leak rate of per-MS bucket in octests/s */
 	uint32_t r_default_ms;
 
+	/*! BSS or SGSN. This defines the local state. */
+	bool is_sgsn;
 	/* we might want to add this as a shortcut later, avoiding the NSVC
 	 * lookup for every packet, similar to a routing cache */
 	//struct gprs_nsvc *nsvc;
 };
 extern struct llist_head bssgp_bvc_ctxts;
+/* Create a BTS Context with BVCI+NSEI */
+struct bssgp_bvc_ctx *btsctx_alloc(uint16_t bvci, uint16_t nsei);
 /* Find a BTS Context based on parsed RA ID and Cell ID */
 struct bssgp_bvc_ctx *btsctx_by_raid_cid(const struct gprs_ra_id *raid, uint16_t cid);
 /* Find a BTS context based on BVCI+NSEI tuple */
 struct bssgp_bvc_ctx *btsctx_by_bvci_nsei(uint16_t bvci, uint16_t nsei);
+/* Free a given BTS context */
+void bssgp_bvc_ctx_free(struct bssgp_bvc_ctx *ctx);
 
 #define BVC_F_BLOCKED	0x0001
 
@@ -150,19 +182,25 @@ uint16_t bssgp_parse_cell_id(struct gprs_ra_id *raid, const uint8_t *buf);
 int bssgp_create_cell_id(uint8_t *buf, const struct gprs_ra_id *raid,
 			 uint16_t cid);
 
+int bssgp_parse_cell_id2(struct osmo_routing_area_id *raid, uint16_t *cid,
+			 const uint8_t *buf, size_t buf_len);
+int bssgp_create_cell_id2(uint8_t *buf, size_t buf_len,
+			  const struct osmo_routing_area_id *raid,
+			  uint16_t cid);
+
 /* Wrapper around TLV parser to parse BSSGP IEs */
-static inline int bssgp_tlv_parse(struct tlv_parsed *tp, uint8_t *buf, int len)
+static inline int bssgp_tlv_parse(struct tlv_parsed *tp, const uint8_t *buf, int len)
 {
 	return tlv_parse(tp, &tvlv_att_def, buf, len, 0, 0);
 }
 
-/*! \brief BSSGP Paging mode */
+/*! BSSGP Paging mode */
 enum bssgp_paging_mode {
 	BSSGP_PAGING_PS,
 	BSSGP_PAGING_CS,
 };
 
-/*! \brief BSSGP Paging scope */
+/*! BSSGP Paging scope */
 enum bssgp_paging_scope {
 	BSSGP_PAGING_BSS_AREA,		/*!< all cells in BSS */
 	BSSGP_PAGING_LOCATION_AREA,	/*!< all cells in LA */
@@ -170,7 +208,7 @@ enum bssgp_paging_scope {
 	BSSGP_PAGING_BVCI,		/*!< one cell */
 };
 
-/*! \brief BSSGP paging information */
+/*! BSSGP paging information */
 struct bssgp_paging_info {
 	enum bssgp_paging_mode mode;	/*!< CS or PS paging */
 	enum bssgp_paging_scope scope;	/*!< bssgp_paging_scope */
@@ -203,8 +241,11 @@ int bssgp_fc_in(struct bssgp_flow_control *fc, struct msgb *msg,
 int bssgp_fc_ms_init(struct bssgp_flow_control *fc_ms, uint16_t bvci,
 		     uint16_t nsei, uint32_t max_queue_depth);
 
+void bssgp_flush_all_queues(void);
+void bssgp_fc_flush_queue(struct bssgp_flow_control *fc);
+
 /* gprs_bssgp_vty.c */
 int bssgp_vty_init(void);
-void bssgp_set_log_ss(int ss);
+void bssgp_set_log_ss(int ss) OSMO_DEPRECATED("Use DLBSSGP instead!\n");
 
 int bssgp_prim_cb(struct osmo_prim_hdr *oph, void *ctx);

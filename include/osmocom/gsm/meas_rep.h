@@ -1,6 +1,9 @@
+/*! \file meas_rep.h */
+
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* RX Level and RX Quality */
 struct gsm_rx_lev_qual {
@@ -8,7 +11,7 @@ struct gsm_rx_lev_qual {
 	uint8_t rx_qual;
 };
 
-/* unidirectional measumrement report */
+/* unidirectional measurement report */
 struct gsm_meas_rep_unidir {
 	struct gsm_rx_lev_qual full;
 	struct gsm_rx_lev_qual sub;
@@ -24,3 +27,6 @@ enum meas_rep_field {
 	MEAS_REP_UL_RXQUAL_FULL,
 	MEAS_REP_UL_RXQUAL_SUB,
 };
+
+size_t gsm0858_rsl_ul_meas_enc(const struct gsm_meas_rep_unidir *mru, bool dtxd_used,
+			   uint8_t *buf);

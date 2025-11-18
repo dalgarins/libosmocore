@@ -1,5 +1,10 @@
-/* (C) 2012 by Harald Welte <laforge@gnumonks.org>
+/*! \file gan.c
+ *  Generic Access Network (GAN) / UMA according to TS 44.318. */
+/*
+ * (C) 2012 by Harald Welte <laforge@gnumonks.org>
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +25,6 @@
 #include <osmocom/core/utils.h>
 
 #include <osmocom/gsm/protocol/gsm_44_318.h>
-
 
 const struct value_string gan_msgt_vals[] = {
 	{ GA_MT_RC_DISCOVERY_REQUEST,	"GA-RC DISCOVERY REQUEST" },
@@ -68,7 +72,7 @@ const struct value_string gan_msgt_vals[] = {
 	{ 0, NULL }
 };
 
-static const struct value_string gan_pdisc_vals[] = {
+const struct value_string gan_pdisc_vals[] = {
 	{ GA_PDISC_RC,			"RC" },
 	{ GA_PDISC_CSR,			"CSR" },
 	{ GA_PDISC_PSR,			"PSR" },

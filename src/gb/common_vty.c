@@ -1,7 +1,11 @@
-/* OpenBSC VTY common helpers */
-/* (C) 2009-2012 by Harald Welte <laforge@gnumonks.org>
+/*! \file common_vty.c
+ * OpenBSC VTY common helpers. */
+/*
+ * (C) 2009-2012 by Harald Welte <laforge@gnumonks.org>
  * (C) 2009-2010 by Holger Hans Peter Freyther
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,58 +37,30 @@
 
 #include "common_vty.h"
 
-/* Down vty node level. */
-gDEFUN(libgb_exit,
-       libgb_exit_cmd, "exit", "Exit current mode and down to previous mode\n")
-{
-	switch (vty->node) {
-	case L_NS_NODE:
-	case L_BSSGP_NODE:
-		vty->node = CONFIG_NODE;
-		vty->index = NULL;
-		break;
-	default:
-		break;
-	}
-	return CMD_SUCCESS;
-}
-
-/* End of configuration. */
-gDEFUN(libgb_end,
-       libgb_end_cmd, "end", "End current mode and change to enable mode.")
-{
-	switch (vty->node) {
-	case L_NS_NODE:
-	case L_BSSGP_NODE:
-		vty_config_unlock(vty);
-		vty->node = ENABLE_NODE;
-		vty->index = NULL;
-		vty->index_sub = NULL;
-		break;
-	default:
-		break;
-	}
-	return CMD_SUCCESS;
-}
-
 int gprs_log_filter_fn(const struct log_context *ctx,
 			struct log_target *tar)
 {
-	const struct gprs_nsvc *nsvc = ctx->ctx[GPRS_CTX_NSVC];
-	const struct gprs_bvc *bvc = ctx->ctx[GPRS_CTX_BVC];
+	const void *nse = ctx->ctx[LOG_CTX_GB_NSE];
+	const void *nsvc = ctx->ctx[LOG_CTX_GB_NSVC];
+	const void *bvc = ctx->ctx[LOG_CTX_GB_BVC];
 
-	/* Filter on the NS Virtual Connection */
-	if ((tar->filter_map & (1 << FLT_NSVC)) != 0
-	    && nsvc && (nsvc == tar->filter_data[FLT_NSVC]))
+	/* Filter on the NS Entity */
+	if ((tar->filter_map & (1 << LOG_FLT_GB_NSE)) != 0
+	    && nse && (nse == tar->filter_data[LOG_FLT_GB_NSE]))
 		return 1;
 
 	/* Filter on the NS Virtual Connection */
-	if ((tar->filter_map & (1 << FLT_BVC)) != 0
-	    && bvc && (bvc == tar->filter_data[FLT_BVC]))
+	if ((tar->filter_map & (1 << LOG_FLT_GB_NSVC)) != 0
+	    && nsvc && (nsvc == tar->filter_data[LOG_FLT_GB_NSVC]))
+		return 1;
+
+	/* Filter on the BSSGP Virtual Connection */
+	if ((tar->filter_map & (1 << LOG_FLT_GB_BVC)) != 0
+	    && bvc && (bvc == tar->filter_data[LOG_FLT_GB_BVC]))
 		return 1;
 
 	return 0;
 }
 
 
-int DNS, DBSSGP;
+int DNS;

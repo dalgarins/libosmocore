@@ -3,6 +3,12 @@
 
    Command interpreter routine for virtual terminal [aka TeletYpe]
    Copyright (C) 1997, 98, 99 Kunihiro Ishiguro
+   Copyright (C) 2010-2011 Holger Hans Peter Freyther <zecke@selfish.org>
+   Copyright (C) 2012 Sylvain Munaut <tnt@246tNt.com>
+   Copyright (C) 2013,2015 Harald Welte <laforge@gnumonks.org>
+   Copyright (C) 2013,2017 sysmocom - s.f.m.c. GmbH
+
+   SPDX-License-Identifier: GPL-2.0+
 
 This file is part of GNU Zebra.
 
@@ -18,8 +24,8 @@ General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with GNU Zebra; see the file COPYING.  If not, write to the
-Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-Boston, MA 02111-1307, USA.  */
+Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+Boston, MA  02110-1301, USA. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,23 +37,38 @@ Boston, MA 02111-1307, USA.  */
 #include <unistd.h>
 #include <ctype.h>
 #include <time.h>
+#include <limits.h>
+#include <signal.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include <osmocom/vty/vector.h>
 #include <osmocom/vty/vty.h>
 #include <osmocom/vty/command.h>
 
+#include <osmocom/core/logging.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/timer.h>
+#include <osmocom/core/utils.h>
+
+#ifndef MAXPATHLEN
+  #define MAXPATHLEN 4096
+#endif
+
 
 /*! \addtogroup command
- * @{
- */
-/*! \file command.c */
+ *  @{
+ *  VTY command handling
+ *
+ * \file command.c */
 
 #define CONFIGFILE_MASK 022
 
 void *tall_vty_cmd_ctx;
+
+/* Set by on_dso_load_starttime() for "show uptime". */
+static struct timespec starttime;
 
 /* Command vector which includes some level of command lists. Normally
    each daemon maintains each own cmdvec. */
@@ -56,25 +77,44 @@ vector cmdvec;
 /* Host information structure. */
 struct host host;
 
+struct vty_parent_node {
+	struct llist_head entry;
+
+	/*! private data, specified by creator */
+	void *priv;
+	void *index;
+
+	/*! Node status of this vty */
+	int node;
+
+	/*! When reading from a config file, these are the indenting characters expected for children of
+	 * this VTY node. */
+	char *indent;
+};
+
 /* Standard command node structures. */
 struct cmd_node auth_node = {
 	AUTH_NODE,
 	"Password: ",
+	.name = "auth",
 };
 
 struct cmd_node view_node = {
 	VIEW_NODE,
 	"%s> ",
+	.name = "view",
 };
 
 struct cmd_node auth_enable_node = {
 	AUTH_ENABLE_NODE,
 	"Password: ",
+	.name = "auth-enable",
 };
 
 struct cmd_node enable_node = {
 	ENABLE_NODE,
 	"%s# ",
+	.name = "enable",
 };
 
 struct cmd_node config_node = {
@@ -86,7 +126,7 @@ struct cmd_node config_node = {
 /* Default motd string. */
 const char *default_motd = "";
 
-/*! \brief print the version (and optionally copyright) information
+/*! print the version (and optionally copyright) information
  *
  * This is called from main when a daemon is invoked with -v or --version. */
 void print_version(int print_copyright)
@@ -121,12 +161,49 @@ char *argv_concat(const char **argv, int argc, int shift)
 	return str;
 }
 
-/*! \brief Install top node of command vector. */
-void install_node(struct cmd_node *node, int (*func) (struct vty *))
+/* Strip all characters from a string (prompt) except for alnum, '-' and '_'.
+ * For example used to derive a node->name from node->prompt if the user didn't provide a name;
+ * in turn, this name us used for XML IDs in 'show online-help'. */
+static const char *node_name_from_prompt(const char *prompt, char *name_buf, size_t name_buf_size)
+{
+	const char *pos;
+	int dest = 0;
+
+	if (!prompt || !*prompt)
+		return "";
+
+	for (pos = prompt; *pos && dest < (name_buf_size-1); pos++) {
+		if (pos[0] == '%' && pos[1]) {
+			/* skip "%s"; loop pos++ does the second one. */
+			pos++;
+			continue;
+		}
+		if (!(isalnum(pos[0]) || pos[0] == '-' || pos[0] == '_'))
+			continue;
+		name_buf[dest] = pos[0];
+		dest++;
+	}
+	name_buf[dest] = '\0';
+	return name_buf;
+}
+
+static void install_basic_node_commands(int node);
+
+/*! Install top node of command vector, without adding basic node commands. */
+static void install_node_bare(struct cmd_node *node, int (*func) (struct vty *))
 {
 	vector_set_index(cmdvec, node->node, node);
 	node->func = func;
 	node->cmd_vector = vector_init(VECTOR_MIN_SIZE);
+	if (!*node->name)
+		node_name_from_prompt(node->prompt, node->name, sizeof(node->name));
+}
+
+/*! Install top node of command vector. */
+void install_node(struct cmd_node *node, int (*func) (struct vty *))
+{
+	install_node_bare(node, func);
+	install_basic_node_commands(node->node);
 }
 
 /* Compare two command's string.  Used in sort_node (). */
@@ -146,19 +223,7 @@ static int cmp_desc(const void *p, const void *q)
 	return strcmp(a->cmd, b->cmd);
 }
 
-static int is_config_child(struct vty *vty)
-{
-	if (vty->node <= CONFIG_NODE)
-		return 0;
-	else if (vty->node > CONFIG_NODE && vty->node < _LAST_OSMOVTY_NODE)
-		return 1;
-	else if (host.app_info->is_config_node)
-		return host.app_info->is_config_node(vty, vty->node);
-	else
-		return vty->node > CONFIG_NODE;
-}
-
-/*! \brief Sort each node's command element according to command string. */
+/*! Sort each node's command element according to command string. */
 void sort_node(void)
 {
 	unsigned int i, j;
@@ -188,31 +253,56 @@ void sort_node(void)
 		}
 }
 
-/*! Breaking up string into each command piece. I assume given
-   character is separated by a space character. Return value is a
-   vector which includes char ** data element. */
-vector cmd_make_strvec(const char *string)
+/*! Break up string in command tokens. Return leading indents.
+ * \param[in] string  String to split.
+ * \param[out] indent  If not NULL, return a talloc_strdup of indent characters.
+ * \param[out] strvec_p  Returns vector of split tokens, must not be NULL.
+ * \returns CMD_SUCCESS or CMD_ERR_INVALID_INDENT
+ *
+ * If \a indent is passed non-NULL, only simple space ' ' indents are allowed,
+ * so that \a indent can simply return the count of leading spaces.
+ * Otherwise any isspace() characters are allowed for indenting (backwards compat).
+ */
+int cmd_make_strvec2(const char *string, char **indent, vector *strvec_p)
 {
 	const char *cp, *start;
 	char *token;
 	int strlen;
 	vector strvec;
 
+	*strvec_p = NULL;
+	if (indent)
+		*indent = 0;
+
 	if (string == NULL)
-		return NULL;
+		return CMD_SUCCESS;
 
 	cp = string;
 
 	/* Skip white spaces. */
-	while (isspace((int)*cp) && *cp != '\0')
+	while (isspace((int)*cp) && *cp != '\0') {
+		/* if we're counting indents, we need to be strict about them */
+		if (indent && (*cp != ' ') && (*cp != '\t')) {
+			/* Ignore blank lines, they appear as leading whitespace with line breaks. */
+			if (*cp == '\n' || *cp == '\r') {
+				cp++;
+				string = cp;
+				continue;
+			}
+			return CMD_ERR_INVALID_INDENT;
+		}
 		cp++;
+	}
+
+	if (indent)
+		*indent = talloc_strndup(tall_vty_cmd_ctx, string, cp - string);
 
 	/* Return if there is only white spaces */
 	if (*cp == '\0')
-		return NULL;
+		return CMD_SUCCESS;
 
 	if (*cp == '!' || *cp == '#')
-		return NULL;
+		return CMD_SUCCESS;
 
 	/* Prepare return vector. */
 	strvec = vector_init(VECTOR_MIN_SIZE);
@@ -234,11 +324,24 @@ vector cmd_make_strvec(const char *string)
 			cp++;
 
 		if (*cp == '\0')
-			return strvec;
+			break;
 	}
+
+	*strvec_p = strvec;
+	return CMD_SUCCESS;
 }
 
-/*! \brief Free allocated string vector. */
+/*! Breaking up string into each command piece. I assume given
+   character is separated by a space character. Return value is a
+   vector which includes char ** data element. */
+vector cmd_make_strvec(const char *string)
+{
+	vector strvec;
+	cmd_make_strvec2(string, NULL, &strvec);
+	return strvec;
+}
+
+/*! Free allocated string vector. */
 void cmd_free_strvec(vector v)
 {
 	unsigned int i;
@@ -254,7 +357,7 @@ void cmd_free_strvec(vector v)
 	vector_free(v);
 }
 
-/*! \brief Fetch next description.  Used in \ref cmd_make_descvec(). */
+/*! Fetch next description.  Used in \ref cmd_make_descvec(). */
 static char *cmd_desc_str(const char **string)
 {
 	const char *cp, *start;
@@ -289,10 +392,11 @@ static char *cmd_desc_str(const char **string)
 	return token;
 }
 
-/*! \brief New string vector. */
+/*! New string vector. */
 static vector cmd_make_descvec(const char *string, const char *descstr)
 {
 	int multiple = 0;
+	int optional_brace = 0;
 	const char *sp;
 	char *token;
 	int len;
@@ -314,6 +418,12 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 		while (isspace((int)*cp) && *cp != '\0')
 			cp++;
 
+		/* Explicitly detect optional multi-choice braces like [(one|two)]. */
+		if (cp[0] == '[' && cp[1] == '(') {
+			optional_brace = 1;
+			cp++;
+		}
+
 		if (*cp == '(') {
 			multiple = 1;
 			cp++;
@@ -321,13 +431,12 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 		if (*cp == ')') {
 			multiple = 0;
 			cp++;
+			if (*cp == ']')
+				cp++;
+			optional_brace = 0;
 		}
 		if (*cp == '|') {
-			if (!multiple) {
-				fprintf(stderr, "Command parse error!: %s\n",
-					string);
-				exit(1);
-			}
+			OSMO_ASSERT(multiple);
 			cp++;
 		}
 
@@ -351,9 +460,17 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 
 		len = cp - sp;
 
-		token = _talloc_zero(tall_vty_cmd_ctx, len + 1, "cmd_make_descvec");
-		memcpy(token, sp, len);
-		*(token + len) = '\0';
+		token = _talloc_zero(tall_vty_cmd_ctx, len + (optional_brace? 2 : 0) + 1, "cmd_make_descvec");
+		if (optional_brace) {
+			/* Place each individual multi-choice token in its own square braces */
+			token[0] = '[';
+			memcpy(token + 1, sp, len);
+			token[1 + len] = ']';
+			token[2 + len] = '\0';
+		} else {
+			memcpy(token, sp, len);
+			*(token + len) = '\0';
+		}
 
 		desc = talloc_zero(tall_vty_cmd_ctx, struct desc);
 		desc->cmd = token;
@@ -384,7 +501,7 @@ static int cmd_cmdsize(vector strvec)
 
 	for (i = 0; i < vector_active(strvec); i++)
 		if ((descvec = vector_slot(strvec, i)) != NULL) {
-			if ((vector_active(descvec)) == 1
+			if ((vector_active(descvec)) >= 1
 			    && (desc = vector_slot(descvec, 0)) != NULL) {
 				if (desc->cmd == NULL || CMD_OPTION(desc->cmd))
 					return size;
@@ -396,13 +513,61 @@ static int cmd_cmdsize(vector strvec)
 	return size;
 }
 
-/*! \brief Return prompt character of specified node. */
+/*! Return prompt character of specified node. */
 const char *cmd_prompt(enum node_type node)
 {
 	struct cmd_node *cnode;
 
 	cnode = vector_slot(cmdvec, node);
 	return cnode->prompt;
+}
+
+/*!
+ * escape all special asciidoc symbols
+ * \param unsafe string
+ * \return a new talloc char *
+ */
+char *osmo_asciidoc_escape(const char *inp)
+{
+	int _strlen;
+	char *out, *out_ptr;
+	int len = 0, i;
+
+	if (!inp)
+		return NULL;
+	_strlen = strlen(inp);
+
+	for (i = 0; i < _strlen; ++i) {
+		switch (inp[i]) {
+		case '|':
+			len += 2;
+			break;
+		default:
+			len += 1;
+			break;
+		}
+	}
+
+	out = talloc_size(tall_vty_cmd_ctx, len + 1);
+	if (!out)
+		return NULL;
+
+	out_ptr = out;
+
+	for (i = 0; i < _strlen; ++i) {
+		switch (inp[i]) {
+		case '|':
+		/* Prepend escape character "\": */
+			*(out_ptr++) = '\\';
+			/* fall through */
+		default:
+			*(out_ptr++) = inp[i];
+			break;
+		}
+	}
+
+	out_ptr[0] = '\0';
+	return out;
 }
 
 static char *xml_escape(const char *inp)
@@ -438,7 +603,7 @@ static char *xml_escape(const char *inp)
 		}
 	}
 
-	out = talloc_size(NULL, len + 1);
+	out = talloc_size(tall_vty_cmd_ctx, len + 1);
 	if (!out)
 		return NULL;
 
@@ -477,74 +642,354 @@ static char *xml_escape(const char *inp)
 	return out;
 }
 
+typedef int (*print_func_t)(void *data, const char *fmt, ...);
+
+static const struct value_string cmd_attr_desc[] = {
+	{ CMD_ATTR_DEPRECATED,		"This command is deprecated" },
+	{ CMD_ATTR_HIDDEN,		"This command is hidden (check expert mode)" },
+	{ CMD_ATTR_IMMEDIATE,		"This command applies immediately" },
+	{ CMD_ATTR_NODE_EXIT,		"This command applies on VTY node exit" },
+	/* CMD_ATTR_LIB_COMMAND is intentionally skipped */
+	{ 0, NULL }
+};
+
+/* Public attributes (to be printed in the VTY / XML reference) */
+#define CMD_ATTR_PUBLIC_MASK \
+	(CMD_ATTR_HIDDEN | CMD_ATTR_IMMEDIATE | CMD_ATTR_NODE_EXIT)
+
+/* Get a flag character for a global VTY command attribute */
+static char cmd_attr_get_flag(unsigned int attr)
+{
+	switch (attr) {
+	case CMD_ATTR_HIDDEN:
+		return '^';
+	case CMD_ATTR_IMMEDIATE:
+		return '!';
+	case CMD_ATTR_NODE_EXIT:
+		return '@';
+	default:
+		return '.';
+	}
+}
+
+/* Description of attributes shared between the lib commands */
+static const char * const cmd_lib_attr_desc[32] = {
+	/* [OSMO_LIBNAME_LIB_ATTR_ATTRNAME] = \
+	 * 	"Brief but meaningful description", */
+	[OSMO_SCCP_LIB_ATTR_RSTRT_ASP] = \
+		"This command applies on ASP restart",
+	[OSMO_ABIS_LIB_ATTR_IPA_NEW_LNK] = \
+		"This command applies on IPA link establishment",
+	[OSMO_ABIS_LIB_ATTR_LINE_UPD] = \
+		"This command applies on E1 line update",
+};
+
+/* Flag letters of attributes shared between the lib commands.
+ * NOTE: uppercase letters only, the rest is reserved for applications. */
+static const char cmd_lib_attr_letters[32] = {
+	/* [OSMO_LIBNAME_LIB_ATTR_ATTRNAME] =		'X', */
+	[OSMO_SCCP_LIB_ATTR_RSTRT_ASP] =		'A',
+	[OSMO_ABIS_LIB_ATTR_IPA_NEW_LNK] =		'I',
+	[OSMO_ABIS_LIB_ATTR_LINE_UPD] =			'L',
+};
+
 /*
- * Write one cmd_element as XML to the given VTY.
+ * Write one cmd_element as XML via a print_func_t.
  */
-static int vty_dump_element(struct cmd_element *cmd, struct vty *vty)
+static int vty_dump_element(const struct cmd_element *cmd, print_func_t print_func,
+			    void *data, const char *newline)
 {
 	char *xml_string = xml_escape(cmd->string);
+	unsigned int i;
 
-	vty_out(vty, "    <command id='%s'>%s", xml_string, VTY_NEWLINE);
-	vty_out(vty, "      <params>%s", VTY_NEWLINE);
+	print_func(data, "    <command id='%s'>%s", xml_string, newline);
 
-	int j;
-	for (j = 0; j < vector_count(cmd->strvec); ++j) {
-		vector descvec = vector_slot(cmd->strvec, j);
-		int i;
-		for (i = 0; i < vector_active(descvec); ++i) {
+	/* Print global attributes and their description */
+	if (cmd->attr & CMD_ATTR_PUBLIC_MASK) { /* ... only public ones */
+		print_func(data, "      <attributes scope='global'>%s", newline);
+
+		for (i = 0; i < ARRAY_SIZE(cmd_attr_desc) - 1; i++) {
+			char *xml_att_desc;
+			char flag;
+
+			if (~cmd->attr & cmd_attr_desc[i].value)
+				continue;
+
+			xml_att_desc = xml_escape(cmd_attr_desc[i].str);
+			print_func(data, "        <attribute doc='%s'",
+				   xml_att_desc, newline);
+			talloc_free(xml_att_desc);
+
+			flag = cmd_attr_get_flag(cmd_attr_desc[i].value);
+			if (flag != '.')
+				print_func(data, " flag='%c'", flag);
+			print_func(data, " />%s", newline);
+		}
+
+		print_func(data, "      </attributes>%s", newline);
+	}
+
+	/* Print application specific attributes and their description */
+	if (cmd->usrattr != 0x00) { /* ... if at least one flag is set */
+		const char * const *desc;
+		const char *letters;
+
+		if (cmd->attr & CMD_ATTR_LIB_COMMAND) {
+			print_func(data, "      <attributes scope='library'>%s", newline);
+			letters = &cmd_lib_attr_letters[0];
+			desc = &cmd_lib_attr_desc[0];
+		} else {
+			print_func(data, "      <attributes scope='application'>%s", newline);
+			letters = &host.app_info->usr_attr_letters[0];
+			desc = &host.app_info->usr_attr_desc[0];
+		}
+
+		for (i = 0; i < ARRAY_SIZE(host.app_info->usr_attr_desc); i++) {
+			char *xml_att_desc;
+			char flag;
+
+			/* Skip attribute if *not* set */
+			if (~cmd->usrattr & ((unsigned)1 << i))
+				continue;
+
+			xml_att_desc = xml_escape(desc[i]);
+			print_func(data, "        <attribute doc='%s'", xml_att_desc);
+			talloc_free(xml_att_desc);
+
+			if ((flag = letters[i]) != '\0')
+				print_func(data, " flag='%c'", flag);
+			print_func(data, " />%s", newline);
+		}
+
+		print_func(data, "      </attributes>%s", newline);
+	}
+
+	print_func(data, "      <params>%s", newline);
+
+	for (i = 0; i < vector_count(cmd->strvec); ++i) {
+		vector descvec = vector_slot(cmd->strvec, i);
+		int j;
+		for (j = 0; j < vector_active(descvec); ++j) {
 			char *xml_param, *xml_doc;
-			struct desc *desc = vector_slot(descvec, i);
+			struct desc *desc = vector_slot(descvec, j);
 			if (desc == NULL)
 				continue;
 
 			xml_param = xml_escape(desc->cmd);
 			xml_doc = xml_escape(desc->str);
-			vty_out(vty, "        <param name='%s' doc='%s' />%s",
-				xml_param, xml_doc, VTY_NEWLINE);
+			print_func(data, "        <param name='%s' doc='%s' />%s",
+				xml_param, xml_doc, newline);
 			talloc_free(xml_param);
 			talloc_free(xml_doc);
 		}
 	}
 
-	vty_out(vty, "      </params>%s", VTY_NEWLINE);
-	vty_out(vty, "    </command>%s", VTY_NEWLINE);
+	print_func(data, "      </params>%s", newline);
+	print_func(data, "    </command>%s", newline);
 
 	talloc_free(xml_string);
 	return 0;
 }
 
+static bool vty_command_is_common(const struct cmd_element *cmd);
+
 /*
- * Dump all nodes and commands associated with a given node as XML to the VTY.
+ * Dump all nodes and commands associated with a given node as XML via a print_func_t.
+ *
+ * (gflag_mask, match = false) - print only those commands with non-matching flags.
+ * (gflag_mask, match = true) - print only those commands with matching flags.
+ *
+ * Some examples:
+ *
+ *  Print all commands except deprecated and hidden (default mode):
+ *    (CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN, false)
+ *  Print only deprecated and hidden commands:
+ *    (CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN, true)
+ *  Print all commands except deprecated (expert mode):
+ *    (CMD_ATTR_DEPRECATED, false)
+ *  Print only hidden commands:
+ *    (CMD_ATTR_HIDDEN, true)
  */
-static int vty_dump_nodes(struct vty *vty)
+static int vty_dump_nodes(print_func_t print_func, void *data, const char *newline,
+			  unsigned char gflag_mask, bool match)
 {
 	int i, j;
+	int same_name_count;
 
-	vty_out(vty, "<vtydoc xmlns='urn:osmocom:xml:libosmocore:vty:doc:1.0'>%s", VTY_NEWLINE);
+	print_func(data, "<vtydoc xmlns='urn:osmocom:xml:libosmocore:vty:doc:1.0'>%s", newline);
 
+	/* Only once, list all common node commands. Use the CONFIG node to find common node commands. */
+	print_func(data, "  <node id='_common_cmds_'>%s", newline);
+	print_func(data, "    <name>Common Commands</name>%s", newline);
+	print_func(data, "    <description>These commands are available on all VTY nodes. They are listed"
+		" here only once, to unclutter the VTY reference.</description>%s", newline);
 	for (i = 0; i < vector_active(cmdvec); ++i) {
-		struct cmd_node *cnode;
-		cnode = vector_slot(cmdvec, i);
+		const struct cmd_node *cnode = vector_slot(cmdvec, i);
 		if (!cnode)
 			continue;
-
-		vty_out(vty, "  <node id='%d'>%s", i, VTY_NEWLINE);
+		if (cnode->node != CONFIG_NODE)
+			continue;
 
 		for (j = 0; j < vector_active(cnode->cmd_vector); ++j) {
-			struct cmd_element *elem;
-			elem = vector_slot(cnode->cmd_vector, j);
-			vty_dump_element(elem, vty);
+			const struct cmd_element *elem = vector_slot(cnode->cmd_vector, j);
+			if (!vty_command_is_common(elem))
+				continue;
+			if (!match && (elem->attr & gflag_mask) != 0x00)
+				continue;
+			if (match && (elem->attr & gflag_mask) == 0x00)
+				continue;
+			vty_dump_element(elem, print_func, data, newline);
+		}
+	}
+	print_func(data, "  </node>%s", newline);
+
+	for (i = 0; i < vector_active(cmdvec); ++i) {
+		const struct cmd_node *cnode = vector_slot(cmdvec, i);
+		if (!cnode)
+			continue;
+		if (vector_active(cnode->cmd_vector) < 1)
+			continue;
+
+		/* De-dup node IDs: how many times has this same name been used before? Count the first
+		 * occurence as _1 and omit that first suffix, so that the first occurence is called
+		 * 'name', the second becomes 'name_2', then 'name_3', ... */
+		same_name_count = 1;
+		for (j = 0; j < i; ++j) {
+			const struct cmd_node *cnode2 = vector_slot(cmdvec, j);
+			if (!cnode2)
+				continue;
+			if (strcmp(cnode->name, cnode2->name) == 0)
+				same_name_count ++;
 		}
 
-		vty_out(vty, "  </node>%s", VTY_NEWLINE);
+		print_func(data, "  <node id='%s", cnode->name);
+		if (same_name_count > 1 || !*cnode->name)
+			print_func(data, "_%d", same_name_count);
+		print_func(data, "'>%s", newline);
+		print_func(data, "    <name>%s</name>%s", cnode->name, newline);
+
+		for (j = 0; j < vector_active(cnode->cmd_vector); ++j) {
+			const struct cmd_element *elem = vector_slot(cnode->cmd_vector, j);
+			if (vty_command_is_common(elem))
+				continue;
+			if (!match && (elem->attr & gflag_mask) != 0x00)
+				continue;
+			if (match && (elem->attr & gflag_mask) == 0x00)
+				continue;
+			vty_dump_element(elem, print_func, data, newline);
+		}
+
+		print_func(data, "  </node>%s", newline);
 	}
 
-	vty_out(vty, "</vtydoc>%s", VTY_NEWLINE);
+	print_func(data, "</vtydoc>%s", newline);
 
 	return 0;
 }
 
-/*! \brief Install a command into a node
+static int print_func_vty(void *data, const char *format, ...)
+{
+	struct vty *vty = data;
+	va_list args;
+	int rc;
+	va_start(args, format);
+	rc = vty_out_va(vty, format, args);
+	va_end(args);
+	return rc;
+}
+
+static int vty_dump_xml_ref_to_vty(struct vty *vty)
+{
+	unsigned char gflag_mask = CMD_ATTR_DEPRECATED;
+	if (!vty->expert_mode)
+		gflag_mask |= CMD_ATTR_HIDDEN;
+	return vty_dump_nodes(print_func_vty, vty, VTY_NEWLINE, gflag_mask, false);
+}
+
+static int print_func_stream(void *data, const char *format, ...)
+{
+	va_list args;
+	int rc;
+	va_start(args, format);
+	rc = vfprintf((FILE*)data, format, args);
+	va_end(args);
+	return rc;
+}
+
+const struct value_string vty_ref_gen_mode_names[] = {
+	{ VTY_REF_GEN_MODE_DEFAULT,	"default" },
+	{ VTY_REF_GEN_MODE_EXPERT,	"expert" },
+	{ VTY_REF_GEN_MODE_HIDDEN,	"hidden" },
+	{ 0, NULL }
+};
+
+const struct value_string vty_ref_gen_mode_desc[] = {
+	{ VTY_REF_GEN_MODE_DEFAULT,	"all commands except deprecated and hidden" },
+	{ VTY_REF_GEN_MODE_EXPERT,	"all commands including hidden, excluding deprecated" },
+	{ VTY_REF_GEN_MODE_HIDDEN,	"hidden commands only" },
+	{ 0, NULL }
+};
+
+/*! Print the XML reference of all VTY nodes to the given stream.
+ * \param[out] stream  Output stream to print the XML reference to.
+ * \param[in]  mode    The XML reference generation mode.
+ * \returns always 0 for now, no errors possible.
+ */
+int vty_dump_xml_ref_mode(FILE *stream, enum vty_ref_gen_mode mode)
+{
+	unsigned char gflag_mask;
+	bool match = false;
+
+	switch (mode) {
+	case VTY_REF_GEN_MODE_EXPERT:
+		/* All commands except deprecated */
+		gflag_mask = CMD_ATTR_DEPRECATED;
+		break;
+	case VTY_REF_GEN_MODE_HIDDEN:
+		/* Only hidden commands */
+		gflag_mask = CMD_ATTR_HIDDEN;
+		match = true;
+		break;
+	case VTY_REF_GEN_MODE_DEFAULT:
+	default:
+		/* All commands except deprecated and hidden */
+		gflag_mask = CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN;
+		break;
+	}
+
+	return vty_dump_nodes(print_func_stream, stream, "\n", gflag_mask, match);
+}
+
+/*! Print the XML reference of all VTY nodes to the given stream.
+ * \param[out] stream  Output stream to print the XML reference to.
+ * \returns always 0 for now, no errors possible.
+ *
+ * NOTE: this function is deprecated because it does not allow to
+ *	 specify the XML reference generation mode (default mode
+ *	 is hard-coded).  Use vty_dump_xml_ref_mode() instead.
+ */
+int vty_dump_xml_ref(FILE *stream)
+{
+	return vty_dump_xml_ref_mode(stream, VTY_REF_GEN_MODE_DEFAULT);
+}
+
+/* Check if a command with given string exists at given node */
+static int check_element_exists(struct cmd_node *cnode, const char *cmdstring)
+{
+	int i;
+
+	for (i = 0; i < vector_active(cnode->cmd_vector); ++i) {
+		struct cmd_element *elem;
+		elem = vector_slot(cnode->cmd_vector, i);
+		if (!elem->string)
+			continue;
+		if (!strcmp(elem->string, cmdstring))
+			return 1;
+	}
+	return 0;
+}
+
+/*! Install a command into a node
  *  \param[in] ntype Node Type
  *  \param[cmd] element to be installed
  */
@@ -554,12 +999,10 @@ void install_element(int ntype, struct cmd_element *cmd)
 
 	cnode = vector_slot(cmdvec, ntype);
 
-	if (cnode == NULL) {
-		fprintf(stderr,
-			"Command node %d doesn't exist, please check it\n",
-			ntype);
-		exit(1);
-	}
+	OSMO_ASSERT(cnode);
+	/* ensure no _identical_ command has been registered at this
+	 * node so far */
+	OSMO_ASSERT(!check_element_exists(cnode, cmd->string));
 
 	vector_set(cnode->cmd_vector, cmd);
 
@@ -567,11 +1010,28 @@ void install_element(int ntype, struct cmd_element *cmd)
 	cmd->cmdsize = cmd_cmdsize(cmd->strvec);
 }
 
+/*! Install a library command into a node
+ *  \param[in] ntype Node Type
+ *  \param[in] cmd element to be installed
+ */
+void install_lib_element(int ntype, struct cmd_element *cmd)
+{
+	cmd->attr |= CMD_ATTR_LIB_COMMAND;
+	install_element(ntype, cmd);
+}
+
 /* Install a command into VIEW and ENABLE node */
 void install_element_ve(struct cmd_element *cmd)
 {
 	install_element(VIEW_NODE, cmd);
 	install_element(ENABLE_NODE, cmd);
+}
+
+/* Install a library command into VIEW and ENABLE node */
+void install_lib_element_ve(struct cmd_element *cmd)
+{
+	cmd->attr |= CMD_ATTR_LIB_COMMAND;
+	install_element_ve(cmd);
 }
 
 #ifdef VTY_CRYPT_PW
@@ -592,7 +1052,7 @@ static char *zencrypt(const char *passwd)
 	struct timeval tv;
 	char *crypt(const char *, const char *);
 
-	gettimeofday(&tv, 0);
+	osmo_gettimeofday(&tv, 0);
 
 	to64(&salt[0], random(), 3);
 	to64(&salt[3], tv.tv_usec, 3);
@@ -647,22 +1107,23 @@ static int config_write_host(struct vty *vty)
 static vector cmd_node_vector(vector v, enum node_type ntype)
 {
 	struct cmd_node *cnode = vector_slot(v, ntype);
+	OSMO_ASSERT(cnode != NULL);
 	return cnode->cmd_vector;
 }
 
 /* Completion match types. */
 enum match_type {
-	no_match = 0,
-	any_match,
-	extend_match,
-	ipv4_prefix_match,
-	ipv4_match,
-	ipv6_prefix_match,
-	ipv6_match,
-	range_match,
-	vararg_match,
-	partly_match,
-	exact_match,
+	NO_MATCH = 0,
+	ANY_MATCH,
+	EXTEND_MATCH,
+	IPV4_PREFIX_MATCH,
+	IPV4_MATCH,
+	IPV6_PREFIX_MATCH,
+	IPV6_MATCH,
+	RANGE_MATCH,
+	VARARG_MATCH,
+	PARTLY_MATCH,
+	EXACT_MATCH,
 };
 
 static enum match_type cmd_ipv4_match(const char *str)
@@ -672,7 +1133,7 @@ static enum match_type cmd_ipv4_match(const char *str)
 	char buf[4];
 
 	if (str == NULL)
-		return partly_match;
+		return PARTLY_MATCH;
 
 	for (;;) {
 		memset(buf, 0, sizeof(buf));
@@ -680,29 +1141,29 @@ static enum match_type cmd_ipv4_match(const char *str)
 		while (*str != '\0') {
 			if (*str == '.') {
 				if (dots >= 3)
-					return no_match;
+					return NO_MATCH;
 
 				if (*(str + 1) == '.')
-					return no_match;
+					return NO_MATCH;
 
 				if (*(str + 1) == '\0')
-					return partly_match;
+					return PARTLY_MATCH;
 
 				dots++;
 				break;
 			}
 			if (!isdigit((int)*str))
-				return no_match;
+				return NO_MATCH;
 
 			str++;
 		}
 
 		if (str - sp > 3)
-			return no_match;
+			return NO_MATCH;
 
 		strncpy(buf, sp, str - sp);
 		if (atoi(buf) > 255)
-			return no_match;
+			return NO_MATCH;
 
 		nums++;
 
@@ -713,9 +1174,9 @@ static enum match_type cmd_ipv4_match(const char *str)
 	}
 
 	if (nums < 4)
-		return partly_match;
+		return PARTLY_MATCH;
 
-	return exact_match;
+	return EXACT_MATCH;
 }
 
 static enum match_type cmd_ipv4_prefix_match(const char *str)
@@ -725,7 +1186,7 @@ static enum match_type cmd_ipv4_prefix_match(const char *str)
 	char buf[4];
 
 	if (str == NULL)
-		return partly_match;
+		return PARTLY_MATCH;
 
 	for (;;) {
 		memset(buf, 0, sizeof(buf));
@@ -733,44 +1194,44 @@ static enum match_type cmd_ipv4_prefix_match(const char *str)
 		while (*str != '\0' && *str != '/') {
 			if (*str == '.') {
 				if (dots == 3)
-					return no_match;
+					return NO_MATCH;
 
 				if (*(str + 1) == '.' || *(str + 1) == '/')
-					return no_match;
+					return NO_MATCH;
 
 				if (*(str + 1) == '\0')
-					return partly_match;
+					return PARTLY_MATCH;
 
 				dots++;
 				break;
 			}
 
 			if (!isdigit((int)*str))
-				return no_match;
+				return NO_MATCH;
 
 			str++;
 		}
 
 		if (str - sp > 3)
-			return no_match;
+			return NO_MATCH;
 
 		strncpy(buf, sp, str - sp);
 		if (atoi(buf) > 255)
-			return no_match;
+			return NO_MATCH;
 
 		if (dots == 3) {
 			if (*str == '/') {
 				if (*(str + 1) == '\0')
-					return partly_match;
+					return PARTLY_MATCH;
 
 				str++;
 				break;
 			} else if (*str == '\0')
-				return partly_match;
+				return PARTLY_MATCH;
 		}
 
 		if (*str == '\0')
-			return partly_match;
+			return PARTLY_MATCH;
 
 		str++;
 	}
@@ -778,15 +1239,15 @@ static enum match_type cmd_ipv4_prefix_match(const char *str)
 	sp = str;
 	while (*str != '\0') {
 		if (!isdigit((int)*str))
-			return no_match;
+			return NO_MATCH;
 
 		str++;
 	}
 
 	if (atoi(sp) > 32)
-		return no_match;
+		return NO_MATCH;
 
-	return exact_match;
+	return EXACT_MATCH;
 }
 
 #define IPV6_ADDR_STR		"0123456789abcdefABCDEF:.%"
@@ -810,10 +1271,10 @@ static enum match_type cmd_ipv6_match(const char *str)
 	int ret;
 
 	if (str == NULL)
-		return partly_match;
+		return PARTLY_MATCH;
 
 	if (strspn(str, IPV6_ADDR_STR) != strlen(str))
-		return no_match;
+		return NO_MATCH;
 
 	/* use inet_pton that has a better support,
 	 * for example inet_pton can support the automatic addresses:
@@ -822,14 +1283,14 @@ static enum match_type cmd_ipv6_match(const char *str)
 	ret = inet_pton(AF_INET6, str, &sin6_dummy.sin6_addr);
 
 	if (ret == 1)
-		return exact_match;
+		return EXACT_MATCH;
 
 	while (*str != '\0') {
 		switch (state) {
 		case STATE_START:
 			if (*str == ':') {
 				if (*(str + 1) != ':' && *(str + 1) != '\0')
-					return no_match;
+					return NO_MATCH;
 				colons--;
 				state = STATE_COLON;
 			} else {
@@ -849,10 +1310,10 @@ static enum match_type cmd_ipv6_match(const char *str)
 			break;
 		case STATE_DOUBLE:
 			if (double_colon)
-				return no_match;
+				return NO_MATCH;
 
 			if (*(str + 1) == ':')
-				return no_match;
+				return NO_MATCH;
 			else {
 				if (*(str + 1) != '\0')
 					colons++;
@@ -866,7 +1327,7 @@ static enum match_type cmd_ipv6_match(const char *str)
 		case STATE_ADDR:
 			if (*(str + 1) == ':' || *(str + 1) == '\0') {
 				if (str - sp > 3)
-					return no_match;
+					return NO_MATCH;
 
 				nums++;
 				state = STATE_COLON;
@@ -882,20 +1343,20 @@ static enum match_type cmd_ipv6_match(const char *str)
 		}
 
 		if (nums > 8)
-			return no_match;
+			return NO_MATCH;
 
 		if (colons > 7)
-			return no_match;
+			return NO_MATCH;
 
 		str++;
 	}
 
 #if 0
 	if (nums < 11)
-		return partly_match;
+		return PARTLY_MATCH;
 #endif				/* 0 */
 
-	return exact_match;
+	return EXACT_MATCH;
 }
 
 static enum match_type cmd_ipv6_prefix_match(const char *str)
@@ -904,20 +1365,19 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 	int colons = 0, nums = 0, double_colon = 0;
 	int mask;
 	const char *sp = NULL;
-	char *endptr = NULL;
 
 	if (str == NULL)
-		return partly_match;
+		return PARTLY_MATCH;
 
 	if (strspn(str, IPV6_PREFIX_STR) != strlen(str))
-		return no_match;
+		return NO_MATCH;
 
 	while (*str != '\0' && state != STATE_MASK) {
 		switch (state) {
 		case STATE_START:
 			if (*str == ':') {
 				if (*(str + 1) != ':' && *(str + 1) != '\0')
-					return no_match;
+					return NO_MATCH;
 				colons--;
 				state = STATE_COLON;
 			} else {
@@ -929,7 +1389,7 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 		case STATE_COLON:
 			colons++;
 			if (*(str + 1) == '/')
-				return no_match;
+				return NO_MATCH;
 			else if (*(str + 1) == ':')
 				state = STATE_DOUBLE;
 			else {
@@ -939,10 +1399,10 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 			break;
 		case STATE_DOUBLE:
 			if (double_colon)
-				return no_match;
+				return NO_MATCH;
 
 			if (*(str + 1) == ':')
-				return no_match;
+				return NO_MATCH;
 			else {
 				if (*(str + 1) != '\0' && *(str + 1) != '/')
 					colons++;
@@ -961,11 +1421,11 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 			if (*(str + 1) == ':' || *(str + 1) == '.'
 			    || *(str + 1) == '\0' || *(str + 1) == '/') {
 				if (str - sp > 3)
-					return no_match;
+					return NO_MATCH;
 
 				for (; sp <= str; sp++)
 					if (*sp == '/')
-						return no_match;
+						return NO_MATCH;
 
 				nums++;
 
@@ -982,7 +1442,7 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 			break;
 		case STATE_SLASH:
 			if (*(str + 1) == '\0')
-				return partly_match;
+				return PARTLY_MATCH;
 
 			state = STATE_MASK;
 			break;
@@ -991,52 +1451,96 @@ static enum match_type cmd_ipv6_prefix_match(const char *str)
 		}
 
 		if (nums > 11)
-			return no_match;
+			return NO_MATCH;
 
 		if (colons > 7)
-			return no_match;
+			return NO_MATCH;
 
 		str++;
 	}
 
 	if (state < STATE_MASK)
-		return partly_match;
+		return PARTLY_MATCH;
 
-	mask = strtol(str, &endptr, 10);
-	if (*endptr != '\0')
-		return no_match;
-
-	if (mask < 0 || mask > 128)
-		return no_match;
+	if (osmo_str_to_int(&mask, str, 10, 0, 128))
+		return NO_MATCH;
 
 /* I don't know why mask < 13 makes command match partly.
    Forgive me to make this comments. I Want to set static default route
    because of lack of function to originate default in ospf6d; sorry
        yasu
   if (mask < 13)
-    return partly_match;
+    return PARTLY_MATCH;
 */
 
-	return exact_match;
+	return EXACT_MATCH;
 }
 
 #endif				/* HAVE_IPV6  */
 
-#define DECIMAL_STRLEN_MAX 10
 
-static int cmd_range_match(const char *range, const char *str)
+#if ULONG_MAX == 18446744073709551615UL
+#define DECIMAL_STRLEN_MAX_UNSIGNED 20
+#elif ULONG_MAX == 4294967295UL
+#define DECIMAL_STRLEN_MAX_UNSIGNED 10
+#else
+#error "ULONG_MAX not defined!"
+#endif
+
+#if LONG_MAX == 9223372036854775807L
+#define DECIMAL_STRLEN_MAX_SIGNED 19
+#elif LONG_MAX == 2147483647L
+#define DECIMAL_STRLEN_MAX_SIGNED 10
+#else
+#error "LONG_MAX not defined!"
+#endif
+
+/* This function is aimed at quickly guessing & filtering the numeric base a
+ * string can contain, by no means validates the entire value.
+ * Returns 16 if string follows pattern "({+,-}0x[digits])"
+ * Returns 10 if string follows pattern "({+,-}[digits])"
+ * Returns a negative value if something other is detected (error)
+*/
+static int check_base(const char *str)
+{
+	const char *ptr = str;
+	/* Skip any space */
+	while (isspace(*ptr)) ptr++;
+
+	/* Skip optional sign: */
+	if (*ptr == '+' || *ptr == '-')
+		ptr++;
+	if (*ptr == '0') {
+		ptr++;
+		if (*ptr == '\0' || isdigit(*ptr))
+			return 10;
+		if (!(*ptr == 'x' || *ptr == 'X'))
+			return -1;
+		ptr++;
+		if (isxdigit(*ptr))
+			return 16;
+		return -1;
+	}
+	return 10;
+}
+
+int vty_cmd_range_match(const char *range, const char *str)
 {
 	char *p;
-	char buf[DECIMAL_STRLEN_MAX + 1];
+	char buf[DECIMAL_STRLEN_MAX_UNSIGNED + 1];
 	char *endptr = NULL;
+	int min_base, max_base, val_base;
 
 	if (str == NULL)
 		return 1;
 
+	if ((val_base = check_base(str)) < 0)
+		return 0;
+
 	if (range[1] == '-') {
 		signed long min = 0, max = 0, val;
 
-		val = strtol(str, &endptr, 10);
+		val = strtol(str, &endptr, val_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1044,11 +1548,13 @@ static int cmd_range_match(const char *range, const char *str)
 		p = strchr(range, '-');
 		if (p == NULL)
 			return 0;
-		if (p - range > DECIMAL_STRLEN_MAX)
+		if (p - range > DECIMAL_STRLEN_MAX_SIGNED)
 			return 0;
 		strncpy(buf, range, p - range);
 		buf[p - range] = '\0';
-		min = -strtol(buf, &endptr, 10);
+		if ((min_base = check_base(buf)) < 0)
+			return 0;
+		min = -strtol(buf, &endptr, min_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1056,11 +1562,13 @@ static int cmd_range_match(const char *range, const char *str)
 		p = strchr(range, '>');
 		if (p == NULL)
 			return 0;
-		if (p - range > DECIMAL_STRLEN_MAX)
+		if (p - range > DECIMAL_STRLEN_MAX_SIGNED)
 			return 0;
 		strncpy(buf, range, p - range);
 		buf[p - range] = '\0';
-		max = strtol(buf, &endptr, 10);
+		if ((max_base = check_base(buf)) < 0)
+			return 0;
+		max = strtol(buf, &endptr, max_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1069,7 +1577,10 @@ static int cmd_range_match(const char *range, const char *str)
 	} else {
 		unsigned long min, max, val;
 
-		val = strtoul(str, &endptr, 10);
+		if (str[0] == '-')
+			return 0;
+
+		val = strtoul(str, &endptr, val_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1077,11 +1588,13 @@ static int cmd_range_match(const char *range, const char *str)
 		p = strchr(range, '-');
 		if (p == NULL)
 			return 0;
-		if (p - range > DECIMAL_STRLEN_MAX)
+		if (p - range > DECIMAL_STRLEN_MAX_UNSIGNED)
 			return 0;
 		strncpy(buf, range, p - range);
 		buf[p - range] = '\0';
-		min = strtoul(buf, &endptr, 10);
+		if ((min_base = check_base(buf)) < 0)
+			return 0;
+		min = strtoul(buf, &endptr, min_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1089,11 +1602,13 @@ static int cmd_range_match(const char *range, const char *str)
 		p = strchr(range, '>');
 		if (p == NULL)
 			return 0;
-		if (p - range > DECIMAL_STRLEN_MAX)
+		if (p - range > DECIMAL_STRLEN_MAX_UNSIGNED)
 			return 0;
 		strncpy(buf, range, p - range);
 		buf[p - range] = '\0';
-		max = strtoul(buf, &endptr, 10);
+		if ((max_base = check_base(buf)) < 0)
+			return 0;
+		max = strtoul(buf, &endptr, max_base);
 		if (*endptr != '\0')
 			return 0;
 
@@ -1101,29 +1616,29 @@ static int cmd_range_match(const char *range, const char *str)
 			return 0;
 	}
 
+	/* Don't allow ranges specified by min and max with different bases */
+	if (min_base != max_base)
+		return 0;
+	/* arg value passed must match the base of the range */
+	if (min_base != val_base)
+		return 0;
+
+	/* Everything's fine */
 	return 1;
 }
 
 /* helper to retrieve the 'real' argument string from an optional argument */
-static char *
-cmd_deopt(const char *str)
+static char *cmd_deopt(void *ctx, const char *str)
 {
 	/* we've got "[blah]". We want to strip off the []s and redo the
 	 * match check for "blah"
 	 */
 	size_t len = strlen(str);
-	char *tmp;
 
 	if (len < 3)
 		return NULL;
 
-	/* tmp will hold a string of len-2 chars, so 'len' size is fine */
-	tmp = talloc_size(NULL, len);
-
-	memcpy(tmp, (str + 1), len - 2);
-	tmp[len - 2] = '\0';
-
-	return tmp;
+	return talloc_strndup(ctx, str + 1, len - 2);
 }
 
 static enum match_type
@@ -1134,13 +1649,13 @@ cmd_match(const char *str, const char *command,
 	if (recur && CMD_OPTION(str))
 	{
 		enum match_type ret;
-		char *tmp = cmd_deopt(str);
+		char *tmp = cmd_deopt(tall_vty_cmd_ctx, str);
 
 		/* this would be a bug in a command, however handle it gracefully
 		 * as it we only discover it if a user tries to run it
 		 */
 		if (tmp == NULL)
-			return no_match;
+			return NO_MATCH;
 
 		ret = cmd_match(tmp, command, min, false);
 
@@ -1149,45 +1664,45 @@ cmd_match(const char *str, const char *command,
 		return ret;
 	}
 	else if (CMD_VARARG(str))
-		return vararg_match;
+		return VARARG_MATCH;
 	else if (CMD_RANGE(str))
 	{
-		if (cmd_range_match(str, command))
-			return range_match;
+		if (vty_cmd_range_match(str, command))
+			return RANGE_MATCH;
 	}
 #ifdef HAVE_IPV6
 	else if (CMD_IPV6(str))
 	{
 		if (cmd_ipv6_match(command) >= min)
-			return ipv6_match;
+			return IPV6_MATCH;
 	}
 	else if (CMD_IPV6_PREFIX(str))
 	{
 		if (cmd_ipv6_prefix_match(command) >= min)
-			return ipv6_prefix_match;
+			return IPV6_PREFIX_MATCH;
 	}
 #endif /* HAVE_IPV6  */
 	else if (CMD_IPV4(str))
 	{
 		if (cmd_ipv4_match(command) >= min)
-			return ipv4_match;
+			return IPV4_MATCH;
 	}
 	else if (CMD_IPV4_PREFIX(str))
 	{
 		if (cmd_ipv4_prefix_match(command) >= min)
-			return ipv4_prefix_match;
+			return IPV4_PREFIX_MATCH;
 	}
 	else if (CMD_VARIABLE(str))
-		return extend_match;
+		return EXTEND_MATCH;
 	else if (strncmp(command, str, strlen(command)) == 0)
 	{
 		if (strcmp(command, str) == 0)
-			return  exact_match;
-		else if (partly_match >= min)
-			return partly_match;
+			return  EXACT_MATCH;
+		else if (PARTLY_MATCH >= min)
+			return PARTLY_MATCH;
 	}
 
-	return no_match;
+	return NO_MATCH;
 }
 
 /* Filter vector at the specified index and by the given command string, to
@@ -1203,7 +1718,7 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 	vector descvec;
 	struct desc *desc;
 
-	match_type = no_match;
+	match_type = NO_MATCH;
 
 	/* If command and cmd_element string does not match set NULL to vector */
 	for (i = 0; i < vector_active(v); i++)
@@ -1223,7 +1738,7 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 
 						ret = cmd_match (desc->cmd, command, level, true);
 
-						if (ret != no_match)
+						if (ret != NO_MATCH)
 							matched++;
 
 						if (match_type < ret)
@@ -1234,8 +1749,8 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 			}
 		}
 
-	if (match_type == no_match)
-		return no_match;
+	if (match_type == NO_MATCH)
+		return NO_MATCH;
 
 	/* 2nd pass: We now know the 'strongest' match type for the index, so we
 	 * go again and filter out commands whose argument (at this index) is
@@ -1245,7 +1760,7 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 	 *   foo bar BLAH
 	 *
 	 * and the command string is 'foo bar 10', then we will get here with with
-	 * 'range_match' being the strongest match.  However, if 'BLAH' came
+	 * 'RANGE_MATCH' being the strongest match.  However, if 'BLAH' came
 	 * earlier, it won't have been filtered out (as a CMD_VARIABLE allows "10").
 	 *
 	 * If we don't do a 2nd pass and filter it out, the higher-layers will
@@ -1266,7 +1781,7 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 					if ((desc = vector_slot(descvec, j))) {
 						enum match_type ret;
 
-						ret = cmd_match(desc->cmd, command, any_match, true);
+						ret = cmd_match(desc->cmd, command, ANY_MATCH, true);
 
 						if (ret >= match_type)
 							matched++;
@@ -1283,6 +1798,7 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 static int
 is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 {
+	int ret = 0;
 	unsigned int i;
 	unsigned int j;
 	struct cmd_element *cmd_element;
@@ -1290,98 +1806,127 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 	vector descvec;
 	struct desc *desc;
 
-	for (i = 0; i < vector_active(v); i++)
-		if ((cmd_element = vector_slot(v, i)) != NULL) {
-			int match = 0;
+	/* In this loop, when a match is found, 'matched' points to it. If on a later iteration, an
+	 * identical match is found, the command is ambiguous. The trickiness is that a string may be
+	 * enclosed in '[str]' square brackets, which get removed by a talloc_strndup(), via cmd_deopt().
+	 * Such a string is usually needed for one loop iteration, except when 'matched' points to it. In
+	 * that case, the string must remain allocated until this function exits or another match comes
+	 * around. This is sufficiently confusing to justify a separate talloc tree to store all of the
+	 * odd allocations, and to free them all at the end. We are not expecting too many optional args
+	 * or ambiguities to cause a noticeable memory footprint from keeping all allocations. */
+	void *cmd_deopt_ctx = NULL;
 
-			descvec = vector_slot(cmd_element->strvec, index);
+	for (i = 0; i < vector_active(v); i++) {
+		cmd_element = vector_slot(v, i);
+		if (!cmd_element)
+			continue;
 
-			for (j = 0; j < vector_active(descvec); j++)
-				if ((desc = vector_slot(descvec, j))) {
-					enum match_type ret;
-					const char *str = desc->cmd;
+		int match = 0;
 
-					if (CMD_OPTION(str))
-						if ((str = cmd_deopt(str)) == NULL)
-							continue;
+		descvec = vector_slot(cmd_element->strvec, index);
 
-					switch (type) {
-					case exact_match:
-						if (!(CMD_VARIABLE (str))
-						   && strcmp(command, str) == 0)
-							match++;
-						break;
-					case partly_match:
-						if (!(CMD_VARIABLE (str))
-						   && strncmp(command, str, strlen (command)) == 0)
-						{
-							if (matched
-							    && strcmp(matched,
-								      str) != 0)
-								return 1;	/* There is ambiguous match. */
-							else
-								matched = str;
-							match++;
-						}
-						break;
-					case range_match:
-						if (cmd_range_match
-						    (str, command)) {
-							if (matched
-							    && strcmp(matched,
-								      str) != 0)
-								return 1;
-							else
-								matched = str;
-							match++;
-						}
-						break;
+		for (j = 0; j < vector_active(descvec); j++) {
+			desc = vector_slot(descvec, j);
+			if (!desc)
+				continue;
+
+			enum match_type mtype;
+			const char *str = desc->cmd;
+
+			if (CMD_OPTION(str)) {
+				if (!cmd_deopt_ctx)
+					cmd_deopt_ctx =
+						talloc_named_const(tall_vty_cmd_ctx, 0,
+								   __func__);
+				str = cmd_deopt(cmd_deopt_ctx, str);
+				if (str == NULL)
+					continue;
+			}
+
+			switch (type) {
+			case EXACT_MATCH:
+				if (!(CMD_VARIABLE (str))
+				   && strcmp(command, str) == 0)
+					match++;
+				break;
+			case PARTLY_MATCH:
+				if (!(CMD_VARIABLE (str))
+				   && strncmp(command, str, strlen (command)) == 0)
+				{
+					if (matched
+					    && strcmp(matched,
+						      str) != 0) {
+						ret = 1; /* There is ambiguous match. */
+						goto free_and_return;
+					} else
+						matched = str;
+					match++;
+				}
+				break;
+			case RANGE_MATCH:
+				if (vty_cmd_range_match
+				    (str, command)) {
+					if (matched
+					    && strcmp(matched,
+						      str) != 0) {
+						ret = 1;
+						goto free_and_return;
+					} else
+						matched = str;
+					match++;
+				}
+				break;
 #ifdef HAVE_IPV6
-					case ipv6_match:
-						if (CMD_IPV6(str))
-							match++;
-						break;
-					case ipv6_prefix_match:
-						if ((ret =
-						     cmd_ipv6_prefix_match
-						     (command)) != no_match) {
-							if (ret == partly_match)
-								return 2;	/* There is incomplete match. */
-
-							match++;
-						}
-						break;
-#endif				/* HAVE_IPV6 */
-					case ipv4_match:
-						if (CMD_IPV4(str))
-							match++;
-						break;
-					case ipv4_prefix_match:
-						if ((ret =
-						     cmd_ipv4_prefix_match
-						     (command)) != no_match) {
-							if (ret == partly_match)
-								return 2;	/* There is incomplete match. */
-
-							match++;
-						}
-						break;
-					case extend_match:
-						if (CMD_VARIABLE (str))
-							match++;
-						break;
-					case no_match:
-					default:
-						break;
+			case IPV6_MATCH:
+				if (CMD_IPV6(str))
+					match++;
+				break;
+			case IPV6_PREFIX_MATCH:
+				if ((mtype =
+				     cmd_ipv6_prefix_match
+				     (command)) != NO_MATCH) {
+					if (mtype == PARTLY_MATCH) {
+						ret = 2;	/* There is incomplete match. */
+						goto free_and_return;
 					}
 
-					if (CMD_OPTION(desc->cmd))
-						talloc_free((void*)str);
+					match++;
 				}
-			if (!match)
-				vector_slot(v, i) = NULL;
+				break;
+#endif				/* HAVE_IPV6 */
+			case IPV4_MATCH:
+				if (CMD_IPV4(str))
+					match++;
+				break;
+			case IPV4_PREFIX_MATCH:
+				if ((mtype =
+				     cmd_ipv4_prefix_match
+				     (command)) != NO_MATCH) {
+					if (mtype == PARTLY_MATCH) {
+						ret = 2;	/* There is incomplete match. */
+						goto free_and_return;
+					}
+
+					match++;
+				}
+				break;
+			case EXTEND_MATCH:
+				if (CMD_VARIABLE (str))
+					match++;
+				break;
+			case NO_MATCH:
+			default:
+				break;
+			}
 		}
-	return 0;
+		if (!match)
+			vector_slot(v, i) = NULL;
+	}
+
+free_and_return:
+	if (cmd_deopt_ctx)
+		talloc_free(cmd_deopt_ctx);
+	return ret;
 }
 
 /* If src matches dst return dst string, otherwise return NULL */
@@ -1412,7 +1957,7 @@ static const char *cmd_entry_function_desc(const char *src, const char *dst)
 		return dst;
 
 	if (CMD_RANGE(dst)) {
-		if (cmd_range_match(dst, src))
+		if (vty_cmd_range_match(dst, src))
 			return dst;
 		else
 			return NULL;
@@ -1535,9 +2080,9 @@ cmd_describe_command_real(vector vline, struct vty *vty, int *status)
 		if (!command)
 			continue;
 
-		match = cmd_filter(command, cmd_vector, i, any_match);
+		match = cmd_filter(command, cmd_vector, i, ANY_MATCH);
 
-		if (match == vararg_match) {
+		if (match == VARARG_MATCH) {
 			struct cmd_element *cmd_element;
 			vector descvec;
 			unsigned int j, k;
@@ -1590,7 +2135,7 @@ cmd_describe_command_real(vector vline, struct vty *vty, int *status)
 	/* Make sure that cmd_vector is filtered based on current word */
 	command = vector_slot(vline, index);
 	if (command)
-		match = cmd_filter(command, cmd_vector, index, any_match);
+		cmd_filter(command, cmd_vector, index, ANY_MATCH);
 
 	/* Make description vector. */
 	for (i = 0; i < vector_active(cmd_vector); i++) {
@@ -1601,7 +2146,9 @@ cmd_describe_command_real(vector vline, struct vty *vty, int *status)
 		if (!cmd_element)
 			continue;
 
-		if (cmd_element->attr & (CMD_ATTR_DEPRECATED|CMD_ATTR_HIDDEN))
+		if (cmd_element->attr & CMD_ATTR_DEPRECATED)
+			continue;
+		if (!vty->expert_mode && (cmd_element->attr & CMD_ATTR_HIDDEN))
 			continue;
 
 		strvec = cmd_element->strvec;
@@ -1738,7 +2285,7 @@ static char **cmd_complete_command_real(vector vline, struct vty *vty,
 
 			/* First try completion match, if there is exactly match return 1 */
 			match =
-			    cmd_filter(command, cmd_vector, i, any_match);
+			    cmd_filter(command, cmd_vector, i, ANY_MATCH);
 
 			/* If there is exact match then filter ambiguous match else check
 			   ambiguousness. */
@@ -1777,9 +2324,18 @@ static char **cmd_complete_command_real(vector vline, struct vty *vty,
 				descvec = vector_slot(strvec, index);
 				for (j = 0; j < vector_active(descvec); j++)
 					if ((desc = vector_slot(descvec, j))) {
-						if ((string = cmd_entry_function(vector_slot(vline, index), desc->cmd)))
+						const char *cmd = desc->cmd;
+						char *tmp = NULL;
+
+						if (CMD_OPTION(desc->cmd)) {
+							tmp = cmd_deopt(tall_vty_cmd_ctx, desc->cmd);
+							cmd = tmp;
+						}
+						if ((string = cmd_entry_function(vector_slot(vline, index), cmd)))
 							if (cmd_unique_string (matchvec, string))
 								vector_set (matchvec, talloc_strdup(tall_vty_cmd_ctx, string));
+						if (tmp)
+							talloc_free(tmp);
 					}
 			}
 		}
@@ -1793,7 +2349,7 @@ static char **cmd_complete_command_real(vector vline, struct vty *vty,
 
 		/* In case of 'command \t' pattern.  Do you need '?' command at
 		   the end of the line. */
-		if (vector_slot(vline, index) == '\0')
+		if (vector_slot(vline, index) == NULL)
 			*status = CMD_ERR_NOTHING_TODO;
 		else
 			*status = CMD_ERR_NO_MATCH;
@@ -1882,6 +2438,34 @@ char **cmd_complete_command(vector vline, struct vty *vty, int *status)
 	return cmd_complete_command_real(vline, vty, status);
 }
 
+static struct vty_parent_node *vty_parent(struct vty *vty)
+{
+	return llist_first_entry_or_null(&vty->parent_nodes,
+					 struct vty_parent_node,
+					 entry);
+}
+
+static bool vty_pop_parent(struct vty *vty)
+{
+	struct vty_parent_node *parent = vty_parent(vty);
+	if (!parent)
+		return false;
+	llist_del(&parent->entry);
+	vty->node = parent->node;
+	vty->priv = parent->priv;
+	vty->index = parent->index;
+	if (vty->indent)
+		talloc_free(vty->indent);
+	vty->indent = parent->indent;
+	talloc_free(parent);
+	return true;
+}
+
+static void vty_clear_parents(struct vty *vty)
+{
+	while (vty_pop_parent(vty));
+}
+
 /* return parent node */
 /*
  * This function MUST eventually converge on a node when called repeatedly,
@@ -1900,29 +2484,23 @@ char **cmd_complete_command(vector vline, struct vty *vty, int *status)
 int vty_go_parent(struct vty *vty)
 {
 	switch (vty->node) {
-		case AUTH_NODE:
-		case VIEW_NODE:
-		case ENABLE_NODE:
-		case CONFIG_NODE:
-			break;
+	case AUTH_NODE:
+	case VIEW_NODE:
+	case ENABLE_NODE:
+	case CONFIG_NODE:
+		vty_clear_parents(vty);
+		break;
 
-		case AUTH_ENABLE_NODE:
-			vty->node = VIEW_NODE;
-			break;
+	case AUTH_ENABLE_NODE:
+		vty->node = VIEW_NODE;
+		vty_clear_parents(vty);
+		break;
 
-		case CFG_LOG_NODE:
-		case VTY_NODE:
-			vty->node = CONFIG_NODE;
-			break;
-
-		default:
-			if (host.app_info->go_parent_cb)
-				host.app_info->go_parent_cb(vty);
-			else if (is_config_child(vty))
-				vty->node = CONFIG_NODE;
-			else
-				vty->node = VIEW_NODE;
-			break;
+	default:
+		if (host.app_info->go_parent_cb)
+			host.app_info->go_parent_cb(vty);
+		vty_pop_parent(vty);
+		break;
 	}
 
 	return vty->node;
@@ -1933,7 +2511,7 @@ static int
 cmd_execute_command_real(vector vline, struct vty *vty,
 			 struct cmd_element **cmd)
 {
-	unsigned int i;
+	unsigned int i, j;
 	unsigned int index;
 	vector cmd_vector;
 	struct cmd_element *cmd_element;
@@ -1944,18 +2522,22 @@ cmd_execute_command_real(vector vline, struct vty *vty,
 	enum match_type match = 0;
 	int varflag;
 	char *command;
+	int rc;
+	/* Used for temporary storage of cmd_deopt() allocated arguments during
+	   argv[] generation */
+	void *cmd_deopt_ctx = NULL;
 
 	/* Make copy of command elements. */
 	cmd_vector = vector_copy(cmd_node_vector(cmdvec, vty->node));
 
-	for (index = 0; index < vector_active(vline); index++)
+	for (index = 0; index < vector_active(vline); index++) {
 		if ((command = vector_slot(vline, index))) {
 			int ret;
 
 			match = cmd_filter(command, cmd_vector, index,
-			                   any_match);
+			                   ANY_MATCH);
 
-			if (match == vararg_match)
+			if (match == VARARG_MATCH)
 				break;
 
 			ret =
@@ -1969,15 +2551,16 @@ cmd_execute_command_real(vector vline, struct vty *vty,
 				return CMD_ERR_NO_MATCH;
 			}
 		}
+	}
 
 	/* Check matched count. */
 	matched_element = NULL;
 	matched_count = 0;
 	incomplete_count = 0;
 
-	for (i = 0; i < vector_active(cmd_vector); i++)
+	for (i = 0; i < vector_active(cmd_vector); i++) {
 		if ((cmd_element = vector_slot(cmd_vector, i))) {
-			if (match == vararg_match
+			if (match == VARARG_MATCH
 			    || index >= cmd_element->cmdsize) {
 				matched_element = cmd_element;
 #if 0
@@ -1988,6 +2571,7 @@ cmd_execute_command_real(vector vline, struct vty *vty,
 				incomplete_count++;
 			}
 		}
+	}
 
 	/* Finish of using cmd_vector. */
 	vector_free(cmd_vector);
@@ -2007,28 +2591,66 @@ cmd_execute_command_real(vector vline, struct vty *vty,
 	varflag = 0;
 	argc = 0;
 
+	cmd_deopt_ctx = talloc_named_const(tall_vty_cmd_ctx, 0, __func__);
+
 	for (i = 0; i < vector_active(vline); i++) {
-		if (varflag)
+		if (argc == CMD_ARGC_MAX) {
+			rc = CMD_ERR_EXEED_ARGC_MAX;
+			goto rc_free_deopt_ctx;
+		}
+		if (varflag) {
 			argv[argc++] = vector_slot(vline, i);
-		else {
-			vector descvec =
-			    vector_slot(matched_element->strvec, i);
-
-			if (vector_active(descvec) == 1) {
-				struct desc *desc = vector_slot(descvec, 0);
-
-				if (CMD_VARARG(desc->cmd))
-					varflag = 1;
-
-				if (varflag || CMD_VARIABLE(desc->cmd)
-				    || CMD_OPTION(desc->cmd))
-					argv[argc++] = vector_slot(vline, i);
-			} else
-				argv[argc++] = vector_slot(vline, i);
+			continue;
 		}
 
-		if (argc >= CMD_ARGC_MAX)
-			return CMD_ERR_EXEED_ARGC_MAX;
+		vector descvec = vector_slot(matched_element->strvec, i);
+		const char *tmp_cmd;
+
+		if (vector_active(descvec) == 1) {
+			/* Single coice argument, no "(...|...)". */
+			struct desc *desc = vector_slot(descvec, 0);
+
+			if (CMD_OPTION(desc->cmd)) {
+				/* we need to first remove the [] chars, then check to see what's inside (var or token) */
+				tmp_cmd = cmd_deopt(cmd_deopt_ctx, desc->cmd);
+			} else {
+				tmp_cmd = desc->cmd;
+			}
+
+			if (CMD_VARARG(tmp_cmd))
+				varflag = 1;
+			if (varflag || CMD_VARIABLE(tmp_cmd))
+				argv[argc++] = vector_slot(vline, i);
+			else if (CMD_OPTION(desc->cmd))
+				argv[argc++] = tmp_cmd;
+			/* else : we don't want to add non-opt single-choice static args in argv[] */
+		} else {
+			/* multi choice argument. look up which choice
+			   the user meant (can only be one after
+			   filtering and checking for ambigous). For instance,
+			   if user typed "th" for "(two|three)" arg, we
+			   want to pass "three" in argv[]. */
+			for (j = 0; j < vector_active(descvec); j++) {
+				struct desc *desc = vector_slot(descvec, j);
+				if (!desc)
+					continue;
+				if (cmd_match(desc->cmd, vector_slot(vline, i), ANY_MATCH, true) == NO_MATCH)
+					continue;
+				if (CMD_OPTION(desc->cmd)) {
+					/* we need to first remove the [] chars, then check to see what's inside (var or token) */
+					tmp_cmd = cmd_deopt(cmd_deopt_ctx, desc->cmd);
+				} else {
+					tmp_cmd = desc->cmd;
+				}
+
+				if(CMD_VARIABLE(tmp_cmd)) {
+					argv[argc++] = vector_slot(vline, i);
+				} else {
+					argv[argc++] = tmp_cmd;
+				}
+				break;
+			}
+		}
 	}
 
 	/* For vtysh execution. */
@@ -2036,22 +2658,46 @@ cmd_execute_command_real(vector vline, struct vty *vty,
 		*cmd = matched_element;
 
 	if (matched_element->daemon)
-		return CMD_SUCCESS_DAEMON;
+		rc = CMD_SUCCESS_DAEMON;
+	else {
+		/* Execute matched command. */
+		struct vty_parent_node this_node = {
+				.node = vty->node,
+				.priv = vty->priv,
+				.index = vty->index,
+				.indent = vty->indent,
+			};
+		struct vty_parent_node *parent = vty_parent(vty);
+		rc = (*matched_element->func) (matched_element, vty, argc, argv);
 
-	/* Execute matched command. */
-	return (*matched_element->func) (matched_element, vty, argc, argv);
+		/* If we have stepped down into a child node, push a parent frame.
+		 * The causality is such: we don't expect every single node entry implementation to push
+		 * a parent node entry onto vty->parent_nodes. Instead we expect vty_go_parent() to *pop*
+		 * a parent node. Hence if the node changed without the parent node changing, we must
+		 * have stepped into a child node. */
+		if (vty->node != this_node.node && parent == vty_parent(vty)
+		    && vty->node > CONFIG_NODE) {
+			/* Push the parent node. */
+			parent = talloc_zero(vty, struct vty_parent_node);
+			*parent = this_node;
+			llist_add(&parent->entry, &vty->parent_nodes);
+		}
+	}
+
+rc_free_deopt_ctx:
+	/* Now after we called the command func, we can free temporary strings */
+	talloc_free(cmd_deopt_ctx);
+	return rc;
 }
 
 int
 cmd_execute_command(vector vline, struct vty *vty, struct cmd_element **cmd,
 		    int vtysh)
 {
-	int ret, saved_ret, tried = 0;
+	int ret;
 	enum node_type onode;
-	void *oindex;
 
 	onode = vty->node;
-	oindex = vty->index;
 
 	if (cmd_try_do_shortcut(vty->node, vector_slot(vline, 0))) {
 		vector shifted_vline;
@@ -2074,29 +2720,7 @@ cmd_execute_command(vector vline, struct vty *vty, struct cmd_element **cmd,
 		return ret;
 	}
 
-	saved_ret = ret = cmd_execute_command_real(vline, vty, cmd);
-
-	if (vtysh)
-		return saved_ret;
-
-	/* Go to parent for config nodes to attempt to find the right command */
-	while (ret != CMD_SUCCESS && ret != CMD_WARNING
-	       && is_config_child(vty)) {
-		vty_go_parent(vty);
-		ret = cmd_execute_command_real(vline, vty, cmd);
-		tried = 1;
-		if (ret == CMD_SUCCESS || ret == CMD_WARNING) {
-			/* succesfull command, leave the node as is */
-			return ret;
-		}
-	}
-	/* no command succeeded, reset the vty to the original node and
-	   return the error for this node */
-	if (tried) {
-		vty->node = onode;
-		vty->index = oindex;
-	}
-	return saved_ret;
+	return cmd_execute_command_real(vline, vty, cmd);
 }
 
 /* Execute command by argument readline. */
@@ -2124,10 +2748,10 @@ cmd_execute_command_strict(vector vline, struct vty *vty,
 			int ret;
 
 			match = cmd_filter(vector_slot(vline, index),
-			                   cmd_vector, index, exact_match);
+			                   cmd_vector, index, EXACT_MATCH);
 
 			/* If command meets '.VARARG' then finish matching. */
-			if (match == vararg_match)
+			if (match == VARARG_MATCH)
 				break;
 
 			ret =
@@ -2150,7 +2774,7 @@ cmd_execute_command_strict(vector vline, struct vty *vty,
 		if (vector_slot(cmd_vector, i) != NULL) {
 			cmd_element = vector_slot(cmd_vector, i);
 
-			if (match == vararg_match
+			if (match == VARARG_MATCH
 			    || index >= cmd_element->cmdsize) {
 				matched_element = cmd_element;
 				matched_count++;
@@ -2177,27 +2801,27 @@ cmd_execute_command_strict(vector vline, struct vty *vty,
 	argc = 0;
 
 	for (i = 0; i < vector_active(vline); i++) {
-		if (varflag)
+		if (argc == CMD_ARGC_MAX)
+			return CMD_ERR_EXEED_ARGC_MAX;
+		if (varflag) {
 			argv[argc++] = vector_slot(vline, i);
-		else {
-			vector descvec =
-			    vector_slot(matched_element->strvec, i);
-
-			if (vector_active(descvec) == 1) {
-				struct desc *desc = vector_slot(descvec, 0);
-
-				if (CMD_VARARG(desc->cmd))
-					varflag = 1;
-
-				if (varflag || CMD_VARIABLE(desc->cmd)
-				    || CMD_OPTION(desc->cmd))
-					argv[argc++] = vector_slot(vline, i);
-			} else
-				argv[argc++] = vector_slot(vline, i);
+			continue;
 		}
 
-		if (argc >= CMD_ARGC_MAX)
-			return CMD_ERR_EXEED_ARGC_MAX;
+		vector descvec = vector_slot(matched_element->strvec, i);
+
+		if (vector_active(descvec) == 1) {
+			struct desc *desc = vector_slot(descvec, 0);
+
+			if (CMD_VARARG(desc->cmd))
+				varflag = 1;
+
+			if (varflag || CMD_VARIABLE(desc->cmd)
+			    || CMD_OPTION(desc->cmd))
+				argv[argc++] = vector_slot(vline, i);
+		} else {
+			argv[argc++] = vector_slot(vline, i);
+		}
 	}
 
 	/* For vtysh execution. */
@@ -2211,42 +2835,169 @@ cmd_execute_command_strict(vector vline, struct vty *vty,
 	return (*matched_element->func) (matched_element, vty, argc, argv);
 }
 
+static inline size_t len(const char *str)
+{
+	return str? strlen(str) : 0;
+}
+
+/*! Make sure the common length of strings a and b is identical, then compare their lengths. I.e., if a
+ * is longer than b, a must start with exactly b, and vice versa.
+ * \returns EINVAL on mismatch, -1 for a < b, 0 for a == b, 1 for a > b.
+ */
+static int indent_cmp(const char *a, const char *b)
+{
+	size_t al, bl;
+	al = len(a);
+	bl = len(b);
+	if (al > bl) {
+		if (bl && strncmp(a, b, bl) != 0)
+			return EINVAL;
+		return 1;
+	}
+	/* al <= bl */
+	if (al && strncmp(a, b, al) != 0)
+		return EINVAL;
+	return (al < bl)? -1 : 0;
+}
+
 /* Configration make from file. */
 int config_from_file(struct vty *vty, FILE * fp)
 {
 	int ret;
 	vector vline;
+	char *indent;
+	int cmp;
+	struct vty_parent_node this_node;
+	struct vty_parent_node *parent;
 
 	while (fgets(vty->buf, VTY_BUFSIZ, fp)) {
-		vline = cmd_make_strvec(vty->buf);
+		indent = NULL;
+		vline = NULL;
+		ret = cmd_make_strvec2(vty->buf, &indent, &vline);
 
-		/* In case of comment line */
-		if (vline == NULL)
+		if (ret != CMD_SUCCESS)
+			goto return_invalid_indent;
+
+		/* In case of comment or empty line */
+		if (vline == NULL) {
+			if (indent) {
+				talloc_free(indent);
+				indent = NULL;
+			}
 			continue;
-		/* Execute configuration command : this is strict match */
-		ret = cmd_execute_command_strict(vline, vty, NULL);
-
-		/* Try again with setting node to CONFIG_NODE */
-		while (ret != CMD_SUCCESS && ret != CMD_WARNING
-		       && ret != CMD_ERR_NOTHING_TODO
-		       && is_config_child(vty)) {
-			vty_go_parent(vty);
-			ret = cmd_execute_command_strict(vline, vty, NULL);
 		}
 
+		/* We have a nonempty line. */
+		if (!vty->indent) {
+			/* We have just entered a node and expecting the first child to come up; but we
+			 * may also skip right back to a parent or ancestor level. */
+			parent = vty_parent(vty);
+
+			/* If there is no parent, record any indentation we encounter. */
+			cmp = parent ? indent_cmp(indent, parent->indent) : 1;
+
+			if (cmp == EINVAL)
+				goto return_invalid_indent;
+
+			if (cmp <= 0) {
+				/* We have gone right back to the parent level or higher, we are skipping
+				 * this child node level entirely. Pop the parent to go back to a node
+				 * that was actually there (to reinstate vty->indent) and re-use below
+				 * go-parent while-loop to find an accurate match of indent in the node
+				 * ancestry. */
+				vty_go_parent(vty);
+			} else {
+				/* The indent is deeper than the just entered parent, record the new
+				 * indentation characters. */
+				vty->indent = talloc_strdup(vty, indent);
+				/* This *is* the new indentation. */
+				cmp = 0;
+			}
+		} else {
+			/* There is a known indentation for this node level, validate and detect node
+			 * exits. */
+			cmp = indent_cmp(indent, vty->indent);
+			if (cmp == EINVAL)
+				goto return_invalid_indent;
+		}
+
+		/* Less indent: go up the parent nodes to find matching amount of less indent. When this
+		 * loop exits, we want to have found an exact match, i.e. cmp == 0. */
+		while (cmp < 0) {
+			vty_go_parent(vty);
+			cmp = indent_cmp(indent, vty->indent);
+			if (cmp == EINVAL)
+				goto return_invalid_indent;
+		}
+
+		/* More indent without having entered a child node level? Either the parent node's indent
+		 * wasn't hit exactly (e.g. there's a space more than the parent level had further above)
+		 * or the indentation increased even though the vty command didn't enter a child. */
+		if (cmp > 0)
+			goto return_invalid_indent;
+
+		/* Remember the current node before the command possibly changes it. */
+		this_node = (struct vty_parent_node){
+				.node = vty->node,
+				.priv = vty->priv,
+				.index = vty->index,
+				.indent = vty->indent,
+			};
+
+		parent = vty_parent(vty);
+		ret = cmd_execute_command_strict(vline, vty, NULL);
 		cmd_free_strvec(vline);
 
-		if (ret != CMD_SUCCESS && ret != CMD_WARNING
-		    && ret != CMD_ERR_NOTHING_TODO)
+		if (ret != CMD_SUCCESS && ret != CMD_ERR_NOTHING_TODO) {
+			if (indent) {
+				talloc_free(indent);
+				indent = NULL;
+			}
 			return ret;
+		}
+
+		/* If we have stepped down into a child node, push a parent frame.
+		 * The causality is such: we don't expect every single node entry implementation to push
+		 * a parent node entry onto vty->parent_nodes. Instead we expect vty_go_parent() to *pop*
+		 * a parent node. Hence if the node changed without the parent node changing, we must
+		 * have stepped into a child node (and now expect a deeper indent). */
+		if (vty->node != this_node.node && parent == vty_parent(vty)) {
+			/* Push the parent node. */
+			parent = talloc_zero(vty, struct vty_parent_node);
+			*parent = this_node;
+			llist_add(&parent->entry, &vty->parent_nodes);
+
+			/* The current talloc'ed vty->indent string will now be owned by this parent
+			 * struct. Indicate that we don't know what deeper indent characters the user
+			 * will choose. */
+			vty->indent = NULL;
+		}
+
+		if (indent) {
+			talloc_free(indent);
+			indent = NULL;
+		}
 	}
+	/* Make sure we call go_parent_cb for all remaining indent levels at the end of file */
+	while (vty_parent(vty))
+		vty_go_parent(vty);
+
 	return CMD_SUCCESS;
+
+return_invalid_indent:
+	if (vline)
+		cmd_free_strvec(vline);
+	if (indent) {
+		talloc_free(indent);
+		indent = NULL;
+	}
+	return CMD_ERR_INVALID_INDENT;
 }
 
 /* Configration from terminal */
 DEFUN(config_terminal,
       config_terminal_cmd,
-      "configure terminal",
+      "configure [terminal]",
       "Configuration from vty interface\n" "Configuration terminal\n")
 {
 	if (vty_config_lock(vty))
@@ -2260,7 +3011,10 @@ DEFUN(config_terminal,
 }
 
 /* Enable command */
-DEFUN(enable, config_enable_cmd, "enable", "Turn on privileged mode command\n")
+DEFUN(enable, config_enable_cmd,
+      "enable [expert-mode]",
+      "Turn on privileged mode command\n"
+      "Enable the expert mode (show hidden commands)\n")
 {
 	/* If enable password is NULL, change to ENABLE_NODE */
 	if ((host.enable == NULL && host.enable_encrypt == NULL) ||
@@ -2268,6 +3022,8 @@ DEFUN(enable, config_enable_cmd, "enable", "Turn on privileged mode command\n")
 		vty->node = ENABLE_NODE;
 	else
 		vty->node = AUTH_ENABLE_NODE;
+
+	vty->expert_mode = argc > 0;
 
 	return CMD_SUCCESS;
 }
@@ -2278,6 +3034,9 @@ DEFUN(disable,
 {
 	if (vty->node == ENABLE_NODE)
 		vty->node = VIEW_NODE;
+
+	vty->expert_mode = false;
+
 	return CMD_SUCCESS;
 }
 
@@ -2289,10 +3048,7 @@ gDEFUN(config_exit,
 	case AUTH_NODE:
 	case VIEW_NODE:
 	case ENABLE_NODE:
-		if (0)		//vty_shell (vty))
-			exit(0);
-		else
-			vty->status = VTY_CLOSE;
+		vty->status = VTY_CLOSE;
 		break;
 	case CONFIG_NODE:
 		vty->node = ENABLE_NODE;
@@ -2332,6 +3088,18 @@ gDEFUN(config_exit,
 	return CMD_SUCCESS;
 }
 
+DEFUN(shutdown,
+      shutdown_cmd, "shutdown", "Request a shutdown of the program\n")
+{
+	LOGP(DLGLOBAL, LOGL_INFO, "Shutdown requested from telnet\n");
+	vty_out(vty, "%s is shutting down. Bye!%s", host.app_info->name, VTY_NEWLINE);
+
+	/* Same exit path as if it was killed by the service manager */
+	kill(getpid(), SIGTERM);
+
+	return CMD_SUCCESS;
+}
+
 /* Show version. */
 DEFUN(show_version,
       show_version_cmd, "show version", SHOW_STR "Displays program version\n")
@@ -2347,7 +3115,24 @@ DEFUN(show_version,
 DEFUN(show_online_help,
       show_online_help_cmd, "show online-help", SHOW_STR "Online help\n")
 {
-	vty_dump_nodes(vty);
+	vty_dump_xml_ref_to_vty(vty);
+	return CMD_SUCCESS;
+}
+
+DEFUN(show_pid,
+      show_pid_cmd, "show pid", SHOW_STR "Displays the process ID\n")
+{
+	vty_out(vty, "%d%s", getpid(), VTY_NEWLINE);
+	return CMD_SUCCESS;
+}
+
+DEFUN(show_uptime,
+      show_uptime_cmd, "show uptime", SHOW_STR "Displays how long the program has been running\n")
+{
+	vty_out(vty, "%s has been running for ", host.app_info->name);
+	vty_out_uptime(vty, &starttime);
+	vty_out_newline(vty);
+
 	return CMD_SUCCESS;
 }
 
@@ -2355,35 +3140,235 @@ DEFUN(show_online_help,
 gDEFUN(config_help,
       config_help_cmd, "help", "Description of the interactive help system\n")
 {
-	vty_out(vty,
-		"This VTY provides advanced help features.  When you need help,%s\
-anytime at the command line please press '?'.%s\
-%s\
-If nothing matches, the help list will be empty and you must backup%s\
- until entering a '?' shows the available options.%s\
-Two styles of help are provided:%s\
-1. Full help is available when you are ready to enter a%s\
-command argument (e.g. 'show ?') and describes each possible%s\
-argument.%s\
-2. Partial help is provided when an abbreviated argument is entered%s\
-   and you want to know what arguments match the input%s\
-   (e.g. 'show me?'.)%s%s", VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE,
-		VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE);
+	vty_out(vty, "This VTY provides advanced help features.  When you need help,%s"
+		     "anytime at the command line please press '?'.%s%s"
+		     "If nothing matches, the help list will be empty and you must backup%s"
+		     " until entering a '?' shows the available options.%s"
+		     "Two styles of help are provided:%s"
+		     "1. Full help is available when you are ready to enter a%s"
+		     "command argument (e.g. 'show ?') and describes each possible%s"
+		     "argument.%s"
+		     "2. Partial help is provided when an abbreviated argument is entered%s"
+		     "   and you want to know what arguments match the input%s"
+		     "   (e.g. 'show me?'.)%s%s",
+		     VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE,
+		     VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE,
+		     VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE, VTY_NEWLINE,
+		     VTY_NEWLINE);
 	return CMD_SUCCESS;
 }
 
+enum {
+	ATTR_TYPE_GLOBAL	= (1 << 0),
+	ATTR_TYPE_LIB		= (1 << 1),
+	ATTR_TYPE_APP		= (1 << 2),
+};
+
+static void print_attr_list(struct vty *vty, unsigned int attr_mask)
+{
+	const char *desc;
+	unsigned int i;
+	bool found;
+	char flag;
+
+	if (attr_mask & ATTR_TYPE_GLOBAL) {
+		vty_out(vty, "  Global attributes:%s", VTY_NEWLINE);
+
+		for (i = 0; i < ARRAY_SIZE(cmd_attr_desc) - 1; i++) {
+			flag = cmd_attr_get_flag(cmd_attr_desc[i].value);
+			desc = cmd_attr_desc[i].str;
+
+			/* Skip attributes without flags */
+			if (flag != '.')
+				vty_out(vty, "    %c  %s%s", flag, desc, VTY_NEWLINE);
+		}
+	}
+
+	if (attr_mask & ATTR_TYPE_LIB) {
+		vty_out(vty, "  Library specific attributes:%s", VTY_NEWLINE);
+
+		for (i = 0, found = false; i < _OSMO_CORE_LIB_ATTR_COUNT; i++) {
+			if ((desc = cmd_lib_attr_desc[i]) == NULL)
+				continue;
+			found = true;
+
+			flag = cmd_lib_attr_letters[i];
+			if (flag == '\0')
+				flag = '.';
+
+			vty_out(vty, "    %c  %s%s", flag, desc, VTY_NEWLINE);
+		}
+
+		if (!found)
+			vty_out(vty, "    (no attributes)%s", VTY_NEWLINE);
+	}
+
+	if (attr_mask & ATTR_TYPE_APP) {
+		vty_out(vty, "  Application specific attributes:%s", VTY_NEWLINE);
+
+		for (i = 0, found = false; i < VTY_CMD_USR_ATTR_NUM; i++) {
+			if ((desc = host.app_info->usr_attr_desc[i]) == NULL)
+				continue;
+			found = true;
+
+			flag = host.app_info->usr_attr_letters[i];
+			if (flag == '\0')
+				flag = '.';
+
+			vty_out(vty, "    %c  %s%s", flag, desc, VTY_NEWLINE);
+		}
+
+		if (!found)
+			vty_out(vty, "    (no attributes)%s", VTY_NEWLINE);
+	}
+}
+
+gDEFUN(show_vty_attr_all, show_vty_attr_all_cmd,
+       "show vty-attributes",
+       SHOW_STR "List of VTY attributes\n")
+{
+	print_attr_list(vty, 0xff);
+	return CMD_SUCCESS;
+}
+
+gDEFUN(show_vty_attr, show_vty_attr_cmd,
+       "show vty-attributes (application|library|global)",
+       SHOW_STR "List of VTY attributes\n"
+       "Application specific attributes only\n"
+       "Library specific attributes only\n"
+       "Global attributes only\n")
+{
+	unsigned int attr_mask = 0;
+
+	if (argv[0][0] == 'g') /* global */
+		attr_mask |= ATTR_TYPE_GLOBAL;
+	else if (argv[0][0] == 'l') /* library */
+		attr_mask |= ATTR_TYPE_LIB;
+	else if (argv[0][0] == 'a') /* application */
+		attr_mask |= ATTR_TYPE_APP;
+
+	print_attr_list(vty, attr_mask);
+	return CMD_SUCCESS;
+}
+
+/* Compose flag bit-mask for all commands within the given node */
+static unsigned int node_flag_mask(const struct cmd_node *cnode, bool expert_mode)
+{
+	unsigned int flag_mask = 0x00;
+	unsigned int f, i;
+
+	for (f = 0; f < VTY_CMD_USR_ATTR_NUM; f++) {
+		for (i = 0; i < vector_active(cnode->cmd_vector); i++) {
+			const struct cmd_element *cmd;
+			char flag_letter;
+
+			if ((cmd = vector_slot(cnode->cmd_vector, i)) == NULL)
+				continue;
+			if (cmd->attr & CMD_ATTR_DEPRECATED)
+				continue;
+			if (!expert_mode && (cmd->attr & CMD_ATTR_HIDDEN))
+				continue;
+			if (~cmd->usrattr & ((unsigned)1 << f))
+				continue;
+
+			if (cmd->attr & CMD_ATTR_LIB_COMMAND)
+				flag_letter = cmd_lib_attr_letters[f];
+			else
+				flag_letter = host.app_info->usr_attr_letters[f];
+
+			if (flag_letter == '\0')
+				continue;
+
+			flag_mask |= (1 << f);
+			break;
+		}
+	}
+
+	return flag_mask;
+}
+
+/* Compose global flag char-mask for the given command (e.g. "!" or "@") */
+static const char *cmd_gflag_mask(const struct cmd_element *cmd)
+{
+	static char char_mask[8 + 1];
+	char *ptr = &char_mask[0];
+
+	/* Mutually exclusive global attributes */
+	if (cmd->attr & CMD_ATTR_HIDDEN)
+		*(ptr++) = cmd_attr_get_flag(CMD_ATTR_HIDDEN);
+	else if (cmd->attr & CMD_ATTR_IMMEDIATE)
+		*(ptr++) = cmd_attr_get_flag(CMD_ATTR_IMMEDIATE);
+	else if (cmd->attr & CMD_ATTR_NODE_EXIT)
+		*(ptr++) = cmd_attr_get_flag(CMD_ATTR_NODE_EXIT);
+	else
+		*(ptr++) = '.';
+
+	*ptr = '\0';
+
+	return char_mask;
+}
+
+/* Compose app / lib flag char-mask for the given command (e.g. ".F.OB..") */
+static const char *cmd_flag_mask(const struct cmd_element *cmd,
+				 unsigned int flag_mask)
+{
+	static char char_mask[VTY_CMD_USR_ATTR_NUM + 1];
+	char *ptr = &char_mask[0];
+	char flag_letter;
+	unsigned int f;
+
+	for (f = 0; f < VTY_CMD_USR_ATTR_NUM; f++) {
+		if (~flag_mask & ((unsigned)1 << f))
+			continue;
+		if (~cmd->usrattr & ((unsigned)1 << f)) {
+			*(ptr++) = '.';
+			continue;
+		}
+
+		if (cmd->attr & CMD_ATTR_LIB_COMMAND)
+			flag_letter = cmd_lib_attr_letters[f];
+		else
+			flag_letter = host.app_info->usr_attr_letters[f];
+
+		*(ptr++) = flag_letter ? flag_letter : '.';
+	}
+
+	*ptr = '\0';
+
+	return char_mask;
+}
+
 /* Help display function for all node. */
-gDEFUN(config_list, config_list_cmd, "list", "Print command list\n")
+gDEFUN(config_list, config_list_cmd,
+       "list [with-flags]",
+       "Print command list\n"
+       "Also print the VTY attribute flags\n")
 {
 	unsigned int i;
 	struct cmd_node *cnode = vector_slot(cmdvec, vty->node);
+	unsigned int flag_mask = 0x00;
 	struct cmd_element *cmd;
 
-	for (i = 0; i < vector_active(cnode->cmd_vector); i++)
-		if ((cmd = vector_slot(cnode->cmd_vector, i)) != NULL
-		    && !(cmd->attr == CMD_ATTR_DEPRECATED
-			 || cmd->attr == CMD_ATTR_HIDDEN))
+	if (argc > 0)
+		flag_mask = node_flag_mask(cnode, vty->expert_mode);
+
+	for (i = 0; i < vector_active(cnode->cmd_vector); i++) {
+		if ((cmd = vector_slot(cnode->cmd_vector, i)) == NULL)
+			continue;
+		if (cmd->attr & CMD_ATTR_DEPRECATED)
+			continue;
+		if (!vty->expert_mode && (cmd->attr & CMD_ATTR_HIDDEN))
+			continue;
+		if (!argc)
 			vty_out(vty, "  %s%s", cmd->string, VTY_NEWLINE);
+		else {
+			vty_out(vty, "  %s %s  %s%s",
+				cmd_gflag_mask(cmd),
+				cmd_flag_mask(cmd, flag_mask),
+				cmd->string, VTY_NEWLINE);
+		}
+	}
+
 	return CMD_SUCCESS;
 }
 
@@ -2399,16 +3384,26 @@ static int write_config_file(const char *config_file, char **outpath)
 
 	*outpath = NULL;
 
+	/* The string composition code here would be a case for talloc_asprintf(), but the pseudotalloc.c
+	 * talloc_asprintf() implementation would truncate a too-long path with "[...]", so doing it
+	 * manually instead. */
+
 	/* Check and see if we are operating under vtysh configuration */
 	config_file_sav =
 	    _talloc_zero(tall_vty_cmd_ctx,
 			 strlen(config_file) + strlen(CONF_BACKUP_EXT) + 1,
 			 "config_file_sav");
+	if (!config_file_sav)
+		return -1;
 	strcpy(config_file_sav, config_file);
 	strcat(config_file_sav, CONF_BACKUP_EXT);
 
 	config_file_tmp = _talloc_zero(tall_vty_cmd_ctx, strlen(config_file) + 8,
-					"config_file_tmp");
+				       "config_file_tmp");
+	if (!config_file_tmp) {
+		talloc_free(config_file_sav);
+		return -1;
+	}
 	sprintf(config_file_tmp, "%s.XXXXXX", config_file);
 
 	/* Open file to configuration write. */
@@ -2456,7 +3451,6 @@ static int write_config_file(const char *config_file, char **outpath)
 			unlink(config_file_tmp);
 			return -3;
 		}
-		sync();
 		if (unlink(config_file) != 0) {
 			*outpath = talloc_strdup(tall_vty_cmd_ctx, config_file);
 			talloc_free(config_file_sav);
@@ -2473,7 +3467,6 @@ static int write_config_file(const char *config_file, char **outpath)
 		return -5;
 	}
 	unlink(config_file_tmp);
-	sync();
 
 	talloc_free(config_file_sav);
 	talloc_free(config_file_tmp);
@@ -2490,9 +3483,10 @@ static int write_config_file(const char *config_file, char **outpath)
 /* Write current configuration into file. */
 DEFUN(config_write_file,
       config_write_file_cmd,
-      "write file",
+      "write file [PATH]",
       "Write running configuration to memory, network, or terminal\n"
-      "Write to configuration file\n")
+      "Write to configuration file\n"
+      "Set file path to store the config, or replace if already exists\n")
 {
 	char *failed_file;
 	int rc;
@@ -2505,6 +3499,9 @@ DEFUN(config_write_file,
 			return CMD_WARNING;
 		}
 	}
+
+	if (argc == 1)
+		host_config_set(argv[0]);
 
 	if (host.config == NULL) {
 		vty_out(vty, "Can't save to configuration file, using vtysh.%s",
@@ -2558,13 +3555,13 @@ ALIAS(config_write_file,
       config_write_cmd,
       "write", "Write running configuration to memory, network, or terminal\n")
 
-    ALIAS(config_write_file,
+ALIAS(config_write_file,
       config_write_memory_cmd,
       "write memory",
       "Write running configuration to memory, network, or terminal\n"
       "Write configuration to the file (same as write file)\n")
 
-    ALIAS(config_write_file,
+ALIAS(config_write_file,
       copy_runningconfig_startupconfig_cmd,
       "copy running-config startup-config",
       "Copy configuration\n"
@@ -2572,7 +3569,7 @@ ALIAS(config_write_file,
       "Copy running config to startup config (same as write file)\n")
 
 /* Write current configuration into the terminal. */
-    DEFUN(config_write_terminal,
+DEFUN(config_write_terminal,
       config_write_terminal_cmd,
       "write terminal",
       "Write running configuration to memory, network, or terminal\n"
@@ -2609,7 +3606,7 @@ ALIAS(config_write_terminal,
       "show running-config", SHOW_STR "running configuration\n")
 
 /* Write startup configuration into the terminal. */
-    DEFUN(show_startup_config,
+DEFUN(show_startup_config,
       show_startup_config_cmd,
       "show startup-config", SHOW_STR "Contentes of startup configuration\n")
 {
@@ -2725,7 +3722,7 @@ ALIAS(config_password, password_text_cmd,
       "The UNENCRYPTED (cleartext) line password\n")
 
 /* VTY enable password set. */
-    DEFUN(config_enable_password, enable_password_cmd,
+DEFUN(config_enable_password, enable_password_cmd,
       "enable password (8|) WORD",
       "Modify enable password parameters\n"
       "Assign the privileged level password\n"
@@ -2788,7 +3785,7 @@ ALIAS(config_enable_password,
       "The UNENCRYPTED (cleartext) 'enable' password\n")
 
 /* VTY enable password delete. */
-    DEFUN(no_config_enable_password, no_enable_password_cmd,
+DEFUN(no_config_enable_password, no_enable_password_cmd,
       "no enable password",
       NO_STR
       "Modify enable password parameters\n"
@@ -2858,16 +3855,7 @@ DEFUN(config_terminal_length, config_terminal_length_cmd,
       "Set number of lines on a screen\n"
       "Number of lines on screen (0 for no pausing)\n")
 {
-	int lines;
-	char *endptr = NULL;
-
-	lines = strtol(argv[0], &endptr, 10);
-	if (lines < 0 || lines > 512 || *endptr != '\0') {
-		vty_out(vty, "length is malformed%s", VTY_NEWLINE);
-		return CMD_WARNING;
-	}
-	vty->lines = lines;
-
+	vty->lines = atoi(argv[0]);
 	return CMD_SUCCESS;
 }
 
@@ -2886,16 +3874,7 @@ DEFUN(service_terminal_length, service_terminal_length_cmd,
       "System wide terminal length configuration\n"
       "Number of lines of VTY (0 means no line control)\n")
 {
-	int lines;
-	char *endptr = NULL;
-
-	lines = strtol(argv[0], &endptr, 10);
-	if (lines < 0 || lines > 512 || *endptr != '\0') {
-		vty_out(vty, "length is malformed%s", VTY_NEWLINE);
-		return CMD_WARNING;
-	}
-	host.lines = lines;
-
+	host.lines = atoi(argv[0]);
 	return CMD_SUCCESS;
 }
 
@@ -3316,35 +4295,73 @@ DEFUN(no_banner_motd,
 /* Set config filename.  Called from vty.c */
 void host_config_set(const char *filename)
 {
-	host.config = talloc_strdup(tall_vty_cmd_ctx, filename);
+	osmo_talloc_replace_string(tall_vty_cmd_ctx, &host.config, filename);
 }
 
+const char *host_config_file(void)
+{
+	return host.config;
+}
+
+/*! Deprecated, now happens implicitly when calling install_node().
+ * Users of the API may still attempt to call this function, hence
+ * leave it here as a no-op. */
 void install_default(int node)
 {
-	install_element(node, &config_help_cmd);
-	install_element(node, &config_list_cmd);
-
-	install_element(node, &config_write_terminal_cmd);
-	install_element(node, &config_write_file_cmd);
-	install_element(node, &config_write_memory_cmd);
-	install_element(node, &config_write_cmd);
-	install_element(node, &show_running_config_cmd);
 }
 
+/*! Deprecated, now happens implicitly when calling install_node().
+ * Users of the API may still attempt to call this function, hence
+ * leave it here as a no-op. */
 void vty_install_default(int node)
 {
-	install_default(node);
+}
 
-	install_element(node, &config_exit_cmd);
+/*! Install common commands like 'exit' and 'list'. */
+static void install_basic_node_commands(int node)
+{
+	install_lib_element(node, &config_help_cmd);
+	install_lib_element(node, &config_list_cmd);
+
+	install_lib_element(node, &show_vty_attr_all_cmd);
+	install_lib_element(node, &show_vty_attr_cmd);
+
+	install_lib_element(node, &config_write_terminal_cmd);
+	install_lib_element(node, &config_write_file_cmd);
+	install_lib_element(node, &config_write_memory_cmd);
+	install_lib_element(node, &config_write_cmd);
+	install_lib_element(node, &show_running_config_cmd);
+
+	install_lib_element(node, &config_exit_cmd);
 
 	if (node >= CONFIG_NODE) {
 		/* It's not a top node. */
-		install_element(node, &config_end_cmd);
+		install_lib_element(node, &config_end_cmd);
 	}
 }
 
+/*! Return true if a node is installed by install_basic_node_commands(), so
+ * that we can avoid repeating them for each and every node during 'show
+ * running-config' */
+static bool vty_command_is_common(const struct cmd_element *cmd)
+{
+	if (cmd == &config_help_cmd
+	    || cmd == &show_vty_attr_all_cmd
+	    || cmd == &show_vty_attr_cmd
+	    || cmd == &config_list_cmd
+	    || cmd == &config_write_terminal_cmd
+	    || cmd == &config_write_file_cmd
+	    || cmd == &config_write_memory_cmd
+	    || cmd == &config_write_cmd
+	    || cmd == &show_running_config_cmd
+	    || cmd == &config_exit_cmd
+	    || cmd == &config_end_cmd)
+		return true;
+	return false;
+}
+
 /**
- * \brief Write the current running config to a given file
+ * Write the current running config to a given file
  * \param[in] vty the vty of the code
  * \param[in] filename where to store the file
  * \return 0 in case of success.
@@ -3364,7 +4381,7 @@ int osmo_vty_write_config_file(const char *filename)
 }
 
 /**
- * \brief Save the current state to the config file
+ * Save the current state to the config file
  * \return 0 in case of success.
  *
  * If the filename already exists create a filename.sav
@@ -3401,65 +4418,99 @@ void cmd_init(int terminal)
 	host.motdfile = NULL;
 
 	/* Install top nodes. */
-	install_node(&view_node, NULL);
+	install_node_bare(&view_node, NULL);
 	install_node(&enable_node, NULL);
-	install_node(&auth_node, NULL);
-	install_node(&auth_enable_node, NULL);
+	install_node_bare(&auth_node, NULL);
+	install_node_bare(&auth_enable_node, NULL);
 	install_node(&config_node, config_write_host);
 
 	/* Each node's basic commands. */
-	install_element(VIEW_NODE, &show_version_cmd);
-	install_element(VIEW_NODE, &show_online_help_cmd);
+	install_lib_element(VIEW_NODE, &show_pid_cmd);
+	install_lib_element(VIEW_NODE, &show_uptime_cmd);
+	install_lib_element(VIEW_NODE, &show_version_cmd);
+	install_lib_element(VIEW_NODE, &show_online_help_cmd);
 	if (terminal) {
-		install_element(VIEW_NODE, &config_list_cmd);
-		install_element(VIEW_NODE, &config_exit_cmd);
-		install_element(VIEW_NODE, &config_help_cmd);
-		install_element(VIEW_NODE, &config_enable_cmd);
-		install_element(VIEW_NODE, &config_terminal_length_cmd);
-		install_element(VIEW_NODE, &config_terminal_no_length_cmd);
-		install_element(VIEW_NODE, &echo_cmd);
+		install_lib_element(VIEW_NODE, &config_list_cmd);
+		install_lib_element(VIEW_NODE, &config_exit_cmd);
+		install_lib_element(VIEW_NODE, &config_help_cmd);
+		install_lib_element(VIEW_NODE, &show_vty_attr_all_cmd);
+		install_lib_element(VIEW_NODE, &show_vty_attr_cmd);
+		install_lib_element(VIEW_NODE, &config_enable_cmd);
+		install_lib_element(VIEW_NODE, &config_terminal_length_cmd);
+		install_lib_element(VIEW_NODE, &config_terminal_no_length_cmd);
+		install_lib_element(VIEW_NODE, &echo_cmd);
 	}
 
 	if (terminal) {
-		vty_install_default(ENABLE_NODE);
-		install_element(ENABLE_NODE, &config_disable_cmd);
-		install_element(ENABLE_NODE, &config_terminal_cmd);
-		install_element (ENABLE_NODE, &copy_runningconfig_startupconfig_cmd);
+		install_lib_element(ENABLE_NODE, &config_disable_cmd);
+		install_lib_element(ENABLE_NODE, &config_terminal_cmd);
+		install_lib_element(ENABLE_NODE, &copy_runningconfig_startupconfig_cmd);
+		install_lib_element(ENABLE_NODE, &shutdown_cmd);
 	}
-	install_element (ENABLE_NODE, &show_startup_config_cmd);
-	install_element(ENABLE_NODE, &show_version_cmd);
-	install_element(ENABLE_NODE, &show_online_help_cmd);
+	install_lib_element(ENABLE_NODE, &show_startup_config_cmd);
+	install_lib_element(ENABLE_NODE, &show_version_cmd);
+	install_lib_element(ENABLE_NODE, &show_online_help_cmd);
 
 	if (terminal) {
-		install_element(ENABLE_NODE, &config_terminal_length_cmd);
-		install_element(ENABLE_NODE, &config_terminal_no_length_cmd);
-		install_element(ENABLE_NODE, &echo_cmd);
-
-		vty_install_default(CONFIG_NODE);
+		install_lib_element(ENABLE_NODE, &config_terminal_length_cmd);
+		install_lib_element(ENABLE_NODE, &config_terminal_no_length_cmd);
+		install_lib_element(ENABLE_NODE, &echo_cmd);
 	}
 
-	install_element(CONFIG_NODE, &hostname_cmd);
-	install_element(CONFIG_NODE, &no_hostname_cmd);
+	install_lib_element(CONFIG_NODE, &hostname_cmd);
+	install_lib_element(CONFIG_NODE, &no_hostname_cmd);
 
 	if (terminal) {
-		install_element(CONFIG_NODE, &password_cmd);
-		install_element(CONFIG_NODE, &password_text_cmd);
-		install_element(CONFIG_NODE, &enable_password_cmd);
-		install_element(CONFIG_NODE, &enable_password_text_cmd);
-		install_element(CONFIG_NODE, &no_enable_password_cmd);
+		install_lib_element(CONFIG_NODE, &password_cmd);
+		install_lib_element(CONFIG_NODE, &password_text_cmd);
+		install_lib_element(CONFIG_NODE, &enable_password_cmd);
+		install_lib_element(CONFIG_NODE, &enable_password_text_cmd);
+		install_lib_element(CONFIG_NODE, &no_enable_password_cmd);
 
 #ifdef VTY_CRYPT_PW
-		install_element(CONFIG_NODE, &service_password_encrypt_cmd);
-		install_element(CONFIG_NODE, &no_service_password_encrypt_cmd);
+		install_lib_element(CONFIG_NODE, &service_password_encrypt_cmd);
+		install_lib_element(CONFIG_NODE, &no_service_password_encrypt_cmd);
 #endif
-		install_element(CONFIG_NODE, &banner_motd_default_cmd);
-		install_element(CONFIG_NODE, &banner_motd_file_cmd);
-		install_element(CONFIG_NODE, &no_banner_motd_cmd);
-		install_element(CONFIG_NODE, &service_terminal_length_cmd);
-		install_element(CONFIG_NODE, &no_service_terminal_length_cmd);
+		install_lib_element(CONFIG_NODE, &banner_motd_default_cmd);
+		install_lib_element(CONFIG_NODE, &banner_motd_file_cmd);
+		install_lib_element(CONFIG_NODE, &no_banner_motd_cmd);
+		install_lib_element(CONFIG_NODE, &service_terminal_length_cmd);
+		install_lib_element(CONFIG_NODE, &no_service_terminal_length_cmd);
 
 	}
 	srand(time(NULL));
+}
+
+static __attribute__((constructor)) void on_dso_load_starttime(void)
+{
+	osmo_clock_gettime(CLOCK_MONOTONIC, &starttime);
+}
+
+/* FIXME: execute this section in the unit test instead */
+static __attribute__((constructor)) void on_dso_load(void)
+{
+	unsigned int i, j;
+
+	/* Check total number of the library specific attributes */
+	OSMO_ASSERT(_OSMO_CORE_LIB_ATTR_COUNT < 32);
+
+	/* Check for duplicates in the list of library specific flags */
+	for (i = 0; i < _OSMO_CORE_LIB_ATTR_COUNT; i++) {
+		if (cmd_lib_attr_letters[i] == '\0')
+			continue;
+
+		/* Some flag characters are reserved for global attributes */
+		const char rafc[] = VTY_CMD_ATTR_FLAGS_RESERVED;
+		for (j = 0; j < ARRAY_SIZE(rafc); j++)
+			OSMO_ASSERT(cmd_lib_attr_letters[i] != rafc[j]);
+
+		/* Only upper case flag letters are allowed for libraries */
+		OSMO_ASSERT(cmd_lib_attr_letters[i] >= 'A');
+		OSMO_ASSERT(cmd_lib_attr_letters[i] <= 'Z');
+
+		for (j = i + 1; j < _OSMO_CORE_LIB_ATTR_COUNT; j++)
+			OSMO_ASSERT(cmd_lib_attr_letters[i] != cmd_lib_attr_letters[j]);
+	}
 }
 
 /*! @} */

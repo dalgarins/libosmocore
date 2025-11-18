@@ -14,9 +14,15 @@
  * routines in libosmovty are not thread-safe.  If you must use them in
  * a multi-threaded context, you have to add your own locking.
  *
+ * libosmovty is developed as part of the Osmocom (Open Source Mobile
+ * Communications) project, a community-based, collaborative development
+ * project to create Free and Open Source implementations of mobile
+ * communications systems.  For more information about Osmocom, please
+ * see https://osmocom.org/
+ *
  * \section sec_copyright Copyright and License
  * Copyright © 1997-2007 - Kuninhiro Ishiguro\n
- * Copyright © 2008-2011 - Harald Welte, Holger Freyther and contributors\n
+ * Copyright © 2008-2012 - Harald Welte, Holger Freyther and contributors\n
  * All rights reserved. \n\n
  * The source code of libosmovty is licensed under the terms of the GNU
  * General Public License as published by the Free Software Foundation;
@@ -29,6 +35,10 @@
  * FITNESS FOR A PARTICULAR PURPOSE.
  * \n\n
  *
+ * \section sec_tracker Homepage + Issue Tracker
+ * libosmovty is distributed as part of libosmocore and shares its
+ * project page at http://osmocom.org/projects/libosmocore
+ *
  * \section sec_contact Contact and Support
  * Community-based support is available at the OpenBSC mailing list
  * <http://lists.osmocom.org/mailman/listinfo/openbsc>\n
@@ -36,6 +46,7 @@
  * <http://sysmocom.de/>
  */
 
+/* SPDX-License-Identifier: GPL-2.0+ */
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -54,12 +65,19 @@
 #include <osmocom/vty/vty.h>
 #include <osmocom/vty/command.h>
 #include <osmocom/vty/buffer.h>
+#include <osmocom/vty/vty_internal.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/timer.h>
+#include <osmocom/core/utils.h>
+
+#ifndef MAXPATHLEN
+  #define MAXPATHLEN 4096
+#endif
+
 
 /* \addtogroup vty
  * @{
- */
-/*! \file vty.c */
+ * \file vty.c */
 
 #define SYSCONFDIR "/usr/local/etc"
 
@@ -75,6 +93,14 @@ vector Vvty_serv_thread;
 
 char *vty_cwd = NULL;
 
+/* IP address passed to the 'line vty'/'bind' command.
+ * Setting the default as vty_bind_addr = "127.0.0.1" doesn't allow freeing, so
+ * use NULL and VTY_BIND_ADDR_DEFAULT instead. */
+static const char *vty_bind_addr = NULL;
+#define VTY_BIND_ADDR_DEFAULT "127.0.0.1"
+/* Port the VTY should bind to. -1 means not configured */
+static int vty_bind_port = -1;
+
 /* Configure lock. */
 static int vty_config;
 
@@ -87,13 +113,15 @@ static void vty_clear_buf(struct vty *vty)
 	memset(vty->buf, 0, vty->max);
 }
 
-/*! \brief Allocate a new vty interface structure */
+/*! Allocate a new vty interface structure */
 struct vty *vty_new(void)
 {
 	struct vty *new = talloc_zero(tall_vty_ctx, struct vty);
 
 	if (!new)
 		goto out;
+
+	INIT_LLIST_HEAD(&new->parent_nodes);
 
 	new->obuf = buffer_new(new, 0);	/* Use default buffer size. */
 	if (!new->obuf)
@@ -103,6 +131,7 @@ struct vty *vty_new(void)
 		goto out_obuf;
 
 	new->max = VTY_BUFSIZ;
+	new->fd = -1;
 
 	return new;
 
@@ -116,7 +145,7 @@ out:
 }
 
 /* Authentication of vty */
-static void vty_auth(struct vty *vty, char *buf)
+static void vty_auth(struct vty *vty)
 {
 	char *passwd = NULL;
 	enum node_type next_node = 0;
@@ -150,10 +179,10 @@ static void vty_auth(struct vty *vty, char *buf)
 	if (passwd) {
 #ifdef VTY_CRYPT_PW
 		if (host.encrypt)
-			fail = strcmp(crypt(buf, passwd), passwd);
+			fail = strcmp(crypt(vty->buf, passwd), passwd);
 		else
 #endif
-			fail = strcmp(buf, passwd);
+			fail = strcmp(vty->buf, passwd);
 	} else
 		fail = 1;
 
@@ -180,10 +209,19 @@ static void vty_auth(struct vty *vty, char *buf)
 	}
 }
 
-/*! \brief Close a given vty interface. */
+void vty_flush(struct vty *vty)
+{
+	if (vty->obuf)
+		buffer_flush_all(vty->obuf, vty->fd);
+}
+
+/*! Close a given vty interface. */
 void vty_close(struct vty *vty)
 {
 	int i;
+
+	/* VTY_CLOSED is handled by the telnet_interface */
+	vty_event(VTY_CLOSED, vty->fd, vty);
 
 	if (vty->obuf)  {
 		/* Flush buffer. */
@@ -202,9 +240,11 @@ void vty_close(struct vty *vty)
 	/* Unset vector. */
 	vector_unset(vtyvec, vty->fd);
 
-	/* Close socket. */
-	if (vty->fd > 0)
+	/* Close socket (ignore standard I/O streams). */
+	if (vty->fd > 2) {
 		close(vty->fd);
+		vty->fd = -1;
+	}
 
 	if (vty->buf) {
 		talloc_free(vty->buf);
@@ -214,39 +254,29 @@ void vty_close(struct vty *vty)
 	/* Check configure. */
 	vty_config_unlock(vty);
 
-	/* VTY_CLOSED is handled by the telnet_interface */
-	vty_event(VTY_CLOSED, vty->fd, vty);
-
 	/* OK free vty. */
 	talloc_free(vty);
 }
 
-/*! \brief Return if this VTY is a shell or not */
+/*! Return if this VTY is a shell or not */
 int vty_shell(struct vty *vty)
 {
 	return vty->type == VTY_SHELL ? 1 : 0;
 }
 
-
-/*! \brief VTY standard output function
- *  \param[in] vty VTY to which we should print
- *  \param[in] format variable-length format string
- */
-int vty_out(struct vty *vty, const char *format, ...)
+int vty_out_va(struct vty *vty, const char *format, va_list ap)
 {
-	va_list args;
 	int len = 0;
 	int size = 1024;
 	char buf[1024];
 	char *p = NULL;
 
 	if (vty_shell(vty)) {
-		va_start(args, format);
-		vprintf(format, args);
-		va_end(args);
+		vprintf(format, ap);
 	} else {
+		va_list args;
 		/* Try to write to initial buffer.  */
-		va_start(args, format);
+		va_copy(args, ap);
 		len = vsnprintf(buf, sizeof buf, format, args);
 		va_end(args);
 
@@ -262,7 +292,7 @@ int vty_out(struct vty *vty, const char *format, ...)
 				if (!p)
 					return -1;
 
-				va_start(args, format);
+				va_copy(args, ap);
 				len = vsnprintf(p, size, format, args);
 				va_end(args);
 
@@ -288,7 +318,21 @@ int vty_out(struct vty *vty, const char *format, ...)
 	return len;
 }
 
-/*! \brief print a newline on the given VTY */
+/*! VTY standard output function
+ *  \param[in] vty VTY to which we should print
+ *  \param[in] format variable-length format string
+ */
+int vty_out(struct vty *vty, const char *format, ...)
+{
+	va_list args;
+	int rc;
+	va_start(args, format);
+	rc = vty_out_va(vty, format, args);
+	va_end(args);
+	return rc;
+}
+
+/*! print a newline on the given VTY */
 int vty_out_newline(struct vty *vty)
 {
 	const char *p = vty_newline(vty);
@@ -296,19 +340,38 @@ int vty_out_newline(struct vty *vty)
 	return 0;
 }
 
-/*! \brief return the current index of a given VTY */
+/*! calculates the time difference of a give timespec to the current time
+ *  and prints in a human readable format (days, hours, minutes, seconds).
+ */
+int vty_out_uptime(struct vty *vty, const struct timespec *starttime)
+{
+	struct timespec now;
+	struct timespec uptime;
+
+	osmo_clock_gettime(CLOCK_MONOTONIC, &now);
+	timespecsub(&now, starttime, &uptime);
+
+	int d = uptime.tv_sec / (3600 * 24);
+	int h = uptime.tv_sec / 3600 % 24;
+	int m = uptime.tv_sec / 60 % 60;
+	int s = uptime.tv_sec % 60;
+
+	return vty_out(vty, "%dd %dh %dm %ds", d, h, m, s);
+}
+
+/*! return the current index of a given VTY */
 void *vty_current_index(struct vty *vty)
 {
 	return vty->index;
 }
 
-/*! \brief return the current node of a given VTY */
+/*! return the current node of a given VTY */
 int vty_current_node(struct vty *vty)
 {
 	return vty->node;
 }
 
-/*! \brief Lock the configuration to a given VTY
+/*! Lock the configuration to a given VTY
  *  \param[in] vty VTY to which the config shall be locked
  *  \returns 1 on success, 0 on error
  *
@@ -323,7 +386,7 @@ int vty_config_lock(struct vty *vty)
 	return vty->config;
 }
 
-/*! \brief Unlock the configuration from a given VTY
+/*! Unlock the configuration from a given VTY
  *  \param[in] vty VTY from which the configuration shall be unlocked
  *  \returns 0 in case of success
  */
@@ -344,7 +407,7 @@ void vty_hello(struct vty *vty)
 	if (host.app_info->name)
 		app_name = host.app_info->name;
 
-	vty_out(vty, "Welcome to the %s control interface%s%s",
+	vty_out(vty, "Welcome to the %s VTY interface%s%s",
 		app_name, VTY_NEWLINE, VTY_NEWLINE);
 
 	if (host.app_info->copyright)
@@ -388,13 +451,13 @@ static void vty_prompt(struct vty *vty)
 }
 
 /* Command execution over the vty interface. */
-static int vty_command(struct vty *vty, char *buf)
+static int vty_command(struct vty *vty)
 {
 	int ret;
 	vector vline;
 
 	/* Split readline string up into the vector */
-	vline = cmd_make_strvec(buf);
+	vline = cmd_make_strvec(vty->buf);
 
 	if (vline == NULL)
 		return CMD_SUCCESS;
@@ -423,6 +486,7 @@ static int vty_command(struct vty *vty, char *buf)
 
 static const char telnet_backward_char = 0x08;
 static const char telnet_space_char = ' ';
+static const char telnet_escape_char = 0x1B;
 
 /* Basic function to write buffer to vty. */
 static void vty_write(struct vty *vty, const char *buf, size_t nbytes)
@@ -660,10 +724,10 @@ static int vty_execute(struct vty *vty)
 	switch (vty->node) {
 	case AUTH_NODE:
 	case AUTH_ENABLE_NODE:
-		vty_auth(vty, vty->buf);
+		vty_auth(vty);
 		break;
 	default:
-		ret = vty_command(vty, vty->buf);
+		ret = vty_command(vty);
 		if (vty->type == VTY_TERM)
 			vty_hist_add(vty);
 		break;
@@ -820,6 +884,19 @@ static void vty_down_level(struct vty *vty)
 		(*config_exit_cmd.func) (NULL, vty, 0, NULL);
 	vty_prompt(vty);
 	vty->cp = 0;
+}
+
+/* When '^L' is typed, clear all lines above the current one. */
+static void vty_clear_screen(struct vty *vty)
+{
+	vty_out(vty, "%c%s%c%s",
+		telnet_escape_char,
+		"[2J", /* Erase Screen */
+		telnet_escape_char,
+		"[H" /* Cursor Home */
+	);
+	vty_prompt(vty);
+	vty_redraw_line(vty);
 }
 
 /* When '^Z' is received from vty, move down to the enable mode. */
@@ -982,7 +1059,7 @@ static void vty_complete_command(struct vty *vty)
 
 	/* In case of 'help \t'. */
 	if (isspace((int)vty->buf[vty->length - 1]))
-		vector_set(vline, '\0');
+		vector_set(vline, NULL);
 
 	matched = cmd_complete_command(vline, vty, &ret);
 
@@ -1084,7 +1161,7 @@ static void vty_describe_command(struct vty *vty)
 	int ret;
 	vector vline;
 	vector describe;
-	unsigned int i, width, desc_width;
+	unsigned int i, cmd_width, desc_width;
 	struct desc *desc, *desc_cr = NULL;
 
 	vline = cmd_make_strvec(vty->buf);
@@ -1092,9 +1169,9 @@ static void vty_describe_command(struct vty *vty)
 	/* In case of '> ?'. */
 	if (vline == NULL) {
 		vline = vector_init(1);
-		vector_set(vline, '\0');
+		vector_set(vline, NULL);
 	} else if (isspace((int)vty->buf[vty->length - 1]))
-		vector_set(vline, '\0');
+		vector_set(vline, NULL);
 
 	describe = cmd_describe_command(vline, vty, &ret);
 
@@ -1108,19 +1185,17 @@ static void vty_describe_command(struct vty *vty)
 		vty_prompt(vty);
 		vty_redraw_line(vty);
 		return;
-		break;
 	case CMD_ERR_NO_MATCH:
 		cmd_free_strvec(vline);
 		vty_out(vty, "%% There is no matched command.%s", VTY_NEWLINE);
 		vty_prompt(vty);
 		vty_redraw_line(vty);
 		return;
-		break;
 	}
 
 	/* Get width of command string. */
-	width = 0;
-	for (i = 0; i < vector_active(describe); i++)
+	cmd_width = 0;
+	for (i = 0; i < vector_active(describe); i++) {
 		if ((desc = vector_slot(describe, i)) != NULL) {
 			unsigned int len;
 
@@ -1131,15 +1206,16 @@ static void vty_describe_command(struct vty *vty)
 			if (desc->cmd[0] == '.')
 				len--;
 
-			if (width < len)
-				width = len;
+			if (cmd_width < len)
+				cmd_width = len;
 		}
+	}
 
 	/* Get width of description string. */
-	desc_width = vty->width - (width + 6);
+	desc_width = vty->width - (cmd_width + 6);
 
 	/* Print out description. */
-	for (i = 0; i < vector_active(describe); i++)
+	for (i = 0; i < vector_active(describe); i++) {
 		if ((desc = vector_slot(describe, i)) != NULL) {
 			if (desc->cmd[0] == '\0')
 				continue;
@@ -1155,19 +1231,20 @@ static void vty_describe_command(struct vty *vty)
 					'.' ? desc->cmd + 1 : desc->cmd,
 					VTY_NEWLINE);
 			else if (desc_width >= strlen(desc->str))
-				vty_out(vty, "  %-*s  %s%s", width,
+				vty_out(vty, "  %-*s  %s%s", cmd_width,
 					desc->cmd[0] ==
 					'.' ? desc->cmd + 1 : desc->cmd,
 					desc->str, VTY_NEWLINE);
 			else
-				vty_describe_fold(vty, width, desc_width, desc);
+				vty_describe_fold(vty, cmd_width, desc_width, desc);
 
 #if 0
-			vty_out(vty, "  %-*s %s%s", width
+			vty_out(vty, "  %-*s %s%s", cmd_width
 				desc->cmd[0] == '.' ? desc->cmd + 1 : desc->cmd,
 				desc->str ? desc->str : "", VTY_NEWLINE);
 #endif				/* 0 */
 		}
+	}
 
 	if ((desc = desc_cr)) {
 		if (!desc->str)
@@ -1175,11 +1252,11 @@ static void vty_describe_command(struct vty *vty)
 				desc->cmd[0] == '.' ? desc->cmd + 1 : desc->cmd,
 				VTY_NEWLINE);
 		else if (desc_width >= strlen(desc->str))
-			vty_out(vty, "  %-*s  %s%s", width,
+			vty_out(vty, "  %-*s  %s%s", cmd_width,
 				desc->cmd[0] == '.' ? desc->cmd + 1 : desc->cmd,
 				desc->str, VTY_NEWLINE);
 		else
-			vty_describe_fold(vty, width, desc_width, desc);
+			vty_describe_fold(vty, cmd_width, desc_width, desc);
 	}
 
 	cmd_free_strvec(vline);
@@ -1195,24 +1272,6 @@ static void vty_stop_input(struct vty *vty)
 	vty->cp = vty->length = 0;
 	vty_clear_buf(vty);
 	vty_out(vty, "%s", VTY_NEWLINE);
-
-	switch (vty->node) {
-	case VIEW_NODE:
-	case ENABLE_NODE:
-		/* Nothing to do. */
-		break;
-	case CONFIG_NODE:
-	case VTY_NODE:
-		vty_config_unlock(vty);
-		vty->node = ENABLE_NODE;
-		break;
-	case CFG_LOG_NODE:
-		vty->node = CONFIG_NODE;
-		break;
-	default:
-		/* Unknown node, we have to ignore it. */
-		break;
-	}
 	vty_prompt(vty);
 
 	/* Set history pointer to the latest one. */
@@ -1256,7 +1315,7 @@ static void vty_buffer_reset(struct vty *vty)
 	vty_redraw_line(vty);
 }
 
-/*! \brief Read data via vty socket. */
+/*! Read data via vty socket. */
 int vty_read(struct vty *vty)
 {
 	int i;
@@ -1384,6 +1443,9 @@ int vty_read(struct vty *vty)
 		case CONTROL('K'):
 			vty_kill_line(vty);
 			break;
+		case CONTROL('L'):
+			vty_clear_screen(vty);
+			break;
 		case CONTROL('N'):
 			vty_next_line(vty);
 			break;
@@ -1405,6 +1467,8 @@ int vty_read(struct vty *vty)
 		case '\n':
 		case '\r':
 			vty_out(vty, "%s", VTY_NEWLINE);
+			/* '\0'-terminate the command buffer */
+			vty->buf[vty->length] = '\0';
 			vty_execute(vty);
 			break;
 		case '\t':
@@ -1442,18 +1506,26 @@ int vty_read(struct vty *vty)
 	return 0;
 }
 
-/* Read up configuration file */
-static int
-vty_read_file(FILE *confp, void *priv)
+/* Read up configuration from a file stream */
+/*! Read up VTY configuration from a file stream
+ *  \param[in] confp file pointer of the stream for the configuration file
+ *  \param[in] priv private data to be passed to \ref vty_read_file
+ *  \returns Zero on success, non-zero on error
+ */
+int vty_read_config_filep(FILE *confp, void *priv)
 {
 	int ret;
 	struct vty *vty;
 
 	vty = vty_new();
-	vty->fd = 0;
 	vty->type = VTY_FILE;
 	vty->node = CONFIG_NODE;
 	vty->priv = priv;
+
+	/* By default, write to stderr. Otherwise, during parsing of the logging
+	 * configuration, all invocations to vty_out() would make the process
+	 * write() to its own stdin (fd=0)! */
+	vty->fd = fileno(stderr);
 
 	ret = config_from_file(vty, confp);
 
@@ -1465,8 +1537,14 @@ vty_read_file(FILE *confp, void *priv)
 		case CMD_ERR_NO_MATCH:
 			fprintf(stderr, "There is no such command.\n");
 			break;
+		case CMD_ERR_INVALID_INDENT:
+			fprintf(stderr,
+				"Inconsistent indentation -- leading whitespace must match adjacent lines, and\n"
+				"indentation must reflect child node levels. A mix of tabs and spaces is\n"
+				"allowed, but their sequence must not change within a child block.\n");
+			break;
 		}
-		fprintf(stderr, "Error occurred during reading below "
+		fprintf(stderr, "Error occurred during reading the below "
 			"line:\n%s\n", vty->buf);
 		vty_close(vty);
 		return -EINVAL;
@@ -1476,13 +1554,13 @@ vty_read_file(FILE *confp, void *priv)
 	return 0;
 }
 
-/*! \brief Create new vty structure. */
+/*! Create new vty structure. */
 struct vty *
 vty_create (int vty_sock, void *priv)
 {
   struct vty *vty;
 
-	struct termios t;
+	struct termios t = {};
 
 	tcgetattr(vty_sock, &t);
 	cfmakeraw(&t);
@@ -1585,6 +1663,32 @@ DEFUN(no_vty_login,
 	return CMD_SUCCESS;
 }
 
+/* vty bind */
+DEFUN(vty_bind, vty_bind_cmd, "bind A.B.C.D [<0-65535>]",
+      "Accept VTY telnet connections on local interface\n"
+      "Local interface IP address (default: " VTY_BIND_ADDR_DEFAULT ")\n"
+      "Local TCP port number\n")
+{
+	talloc_free((void*)vty_bind_addr);
+	vty_bind_addr = talloc_strdup(tall_vty_ctx, argv[0]);
+	vty_bind_port = argc > 1 ? atoi(argv[1]) : -1;
+	return CMD_SUCCESS;
+}
+
+const char *vty_get_bind_addr(void)
+{
+	if (!vty_bind_addr)
+		return VTY_BIND_ADDR_DEFAULT;
+	return vty_bind_addr;
+}
+
+int vty_get_bind_port(int default_port)
+{
+	if (vty_bind_port >= 0)
+		return vty_bind_port;
+	return default_port;
+}
+
 DEFUN(service_advanced_vty,
       service_advanced_vty_cmd,
       "service advanced-vty",
@@ -1653,6 +1757,18 @@ static int vty_config_write(struct vty *vty)
 	/* login */
 	if (!password_check)
 		vty_out(vty, " no login%s", VTY_NEWLINE);
+	else
+		vty_out(vty, " login%s", VTY_NEWLINE);
+
+	/* bind */
+	if (vty_bind_addr && (strcmp(vty_bind_addr, VTY_BIND_ADDR_DEFAULT) != 0 || vty_bind_port >= 0)) {
+		if (vty_bind_port >= 0) {
+			vty_out(vty, " bind %s %d%s", vty_bind_addr,
+				vty_bind_port, VTY_NEWLINE);
+		} else {
+			vty_out(vty, " bind %s%s", vty_bind_addr, VTY_NEWLINE);
+		}
+	}
 
 	vty_out(vty, "!%s", VTY_NEWLINE);
 
@@ -1665,7 +1781,7 @@ struct cmd_node vty_node = {
 	1,
 };
 
-/*! \brief Reset all VTY status. */
+/*! Reset all VTY status. */
 void vty_reset(void)
 {
 	unsigned int i;
@@ -1721,21 +1837,51 @@ void vty_init_vtysh(void)
 	vtyvec = vector_init(VECTOR_MIN_SIZE);
 }
 
-extern void *tall_bsc_ctx;
-
-/*! \brief Initialize VTY layer
+/*! Initialize VTY layer
  *  \param[in] app_info application information
  */
 /* Install vty's own commands like `who' command. */
 void vty_init(struct vty_app_info *app_info)
 {
-	tall_vty_ctx = talloc_named_const(app_info->tall_ctx, 0, "vty");
+	unsigned int i, j;
+
+	tall_vty_ctx = talloc_named_const(NULL, 0, "vty");
 	tall_vty_vec_ctx = talloc_named_const(tall_vty_ctx, 0, "vty_vector");
 	tall_vty_cmd_ctx = talloc_named_const(tall_vty_ctx, 0, "vty_command");
 
 	cmd_init(1);
 
 	host.app_info = app_info;
+
+	/* Check for duplicate flags in application specific attributes (if any) */
+	for (i = 0; i < ARRAY_SIZE(app_info->usr_attr_letters); i++) {
+		if (app_info->usr_attr_letters[i] == '\0')
+			continue;
+
+		/* Some flag characters are reserved for global attributes */
+		const char rafc[] = VTY_CMD_ATTR_FLAGS_RESERVED;
+		for (j = 0; j < ARRAY_SIZE(rafc); j++) {
+			if (app_info->usr_attr_letters[i] != rafc[j])
+				continue;
+			fprintf(stderr, "Attribute flag character '%c' is reserved "
+				"for globals! Please fix.\n", app_info->usr_attr_letters[i]);
+		}
+
+		/* Upper case flag letters are reserved for libraries */
+		if (app_info->usr_attr_letters[i] >= 'A' &&
+		    app_info->usr_attr_letters[i] <= 'Z') {
+			fprintf(stderr, "Attribute flag letter '%c' is reserved "
+				"for libraries! Please fix.\n", app_info->usr_attr_letters[i]);
+		}
+
+		for (j = i + 1; j < ARRAY_SIZE(app_info->usr_attr_letters); j++) {
+			if (app_info->usr_attr_letters[j] != app_info->usr_attr_letters[i])
+				continue;
+			fprintf(stderr, "Found duplicate flag letter '%c' in application "
+				"specific attributes (index %u vs %u)! Please fix.\n",
+				app_info->usr_attr_letters[i], i, j);
+		}
+	}
 
 	/* For further configuration read, preserve current directory. */
 	vty_save_cwd();
@@ -1745,21 +1891,23 @@ void vty_init(struct vty_app_info *app_info)
 	/* Install bgp top node. */
 	install_node(&vty_node, vty_config_write);
 
-	install_element_ve(&config_who_cmd);
-	install_element_ve(&show_history_cmd);
-	install_element(CONFIG_NODE, &line_vty_cmd);
-	install_element(CONFIG_NODE, &service_advanced_vty_cmd);
-	install_element(CONFIG_NODE, &no_service_advanced_vty_cmd);
-	install_element(CONFIG_NODE, &show_history_cmd);
-	install_element(ENABLE_NODE, &terminal_monitor_cmd);
-	install_element(ENABLE_NODE, &terminal_no_monitor_cmd);
+	install_lib_element_ve(&config_who_cmd);
+	install_lib_element_ve(&show_history_cmd);
+	install_lib_element(CONFIG_NODE, &line_vty_cmd);
+	install_lib_element(CONFIG_NODE, &service_advanced_vty_cmd);
+	install_lib_element(CONFIG_NODE, &no_service_advanced_vty_cmd);
+	install_lib_element(CONFIG_NODE, &show_history_cmd);
+	install_lib_element(ENABLE_NODE, &terminal_monitor_cmd);
+	install_lib_element(ENABLE_NODE, &terminal_no_monitor_cmd);
 
-	vty_install_default(VTY_NODE);
-	install_element(VTY_NODE, &vty_login_cmd);
-	install_element(VTY_NODE, &no_vty_login_cmd);
+	install_lib_element(VTY_NODE, &vty_login_cmd);
+	install_lib_element(VTY_NODE, &no_vty_login_cmd);
+	install_lib_element(VTY_NODE, &vty_bind_cmd);
+
+	vty_misc_init();
 }
 
-/*! \brief Read the configuration file using the VTY code
+/*! Read the configuration file using the VTY code
  *  \param[in] file_name file name of the configuration file
  *  \param[in] priv private data to be passed to \ref vty_read_file
  */
@@ -1772,7 +1920,7 @@ int vty_read_config_file(const char *file_name, void *priv)
 	if (!cfile)
 		return -ENOENT;
 
-	rc = vty_read_file(cfile, priv);
+	rc = vty_read_config_filep(cfile, priv);
 	fclose(cfile);
 
 	host_config_set(file_name);

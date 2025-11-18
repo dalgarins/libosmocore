@@ -1,9 +1,11 @@
-/* GSM Radio Signalling Link messages on the A-bis interface 
- * 3GPP TS 08.58 version 8.6.0 Release 1999 / ETSI TS 100 596 V8.6.0 */
-
-/* (C) 2008-2010 by Harald Welte <laforge@gnumonks.org>
+/*
+ * (C) 2008-2017 by Harald Welte <laforge@gnumonks.org>
+ * (C) 2013 by Holger Freyther <holger@freyther.de>
+ * (C) 2014-2016 by sysmocom - s.f.m.c. GmbH
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -30,16 +28,19 @@
 
 /*! \addtogroup rsl
  *  @{
- */
+ * GSM Radio Signalling Link messages on the A-bis interface.
+ * 3GPP TS 08.58 version 8.6.0 Release 1999 / ETSI TS 100 596 V8.6.0.
+ *
+ * \file rsl.c */
 
-/*! \file rsl.c */
-
-/*! \brief Size for RSL \ref msgb_alloc */
+/*! Size for RSL \ref msgb_alloc */
 #define RSL_ALLOC_SIZE		200
-/*! \brief Headroom size for RSL \ref msgb_alloc */
+/*! Headroom size for RSL \ref msgb_alloc */
 #define RSL_ALLOC_HEADROOM	56
 
-/*! \brief Initialize a RSL RLL header */
+/*! Initialize a RSL RLL header
+ *  \param[out] dh Caller-allocated RSL RLL header
+ *  \param[in] msg_type Message Type */
 void rsl_init_rll_hdr(struct abis_rsl_rll_hdr *dh, uint8_t msg_type)
 {
 	dh->c.msg_discr = ABIS_RSL_MDISC_RLL;
@@ -48,7 +49,9 @@ void rsl_init_rll_hdr(struct abis_rsl_rll_hdr *dh, uint8_t msg_type)
 	dh->ie_link_id = RSL_IE_LINK_IDENT;
 }
 
-/*! \brief Initialize a RSL Common Channel header */
+/*! Initialize a RSL Common Channel header
+ *  \param[out] ch Caller-allocated RSL Common Channel Header
+ *  \param[in] msg_type Message Type */
 void rsl_init_cchan_hdr(struct abis_rsl_cchan_hdr *ch, uint8_t msg_type)
 {
 	ch->c.msg_discr = ABIS_RSL_MDISC_COM_CHAN;
@@ -56,7 +59,7 @@ void rsl_init_cchan_hdr(struct abis_rsl_cchan_hdr *ch, uint8_t msg_type)
 	ch->ie_chan = RSL_IE_CHAN_NR;
 }
 
-/* \brief TLV parser definition for RSL */
+/* TLV parser definition for RSL */
 const struct tlv_definition rsl_att_tlvdef = {
 	.def = {
 		[RSL_IE_CHAN_NR]		= { TLV_TYPE_TV },
@@ -119,6 +122,12 @@ const struct tlv_definition rsl_att_tlvdef = {
 		[RSL_IE_TFO_STATUS]		= { TLV_TYPE_TV },
 		[RSL_IE_LLP_APDU]		= { TLV_TYPE_TLV },
 		[RSL_IE_SIEMENS_MRPCI]		= { TLV_TYPE_TV },
+		[RSL_IE_OSMO_REP_ACCH_CAP]	= { TLV_TYPE_TLV },
+		[RSL_IE_OSMO_TRAINING_SEQUENCE]	= { TLV_TYPE_TLV },
+		[RSL_IE_OSMO_TEMP_OVP_ACCH_CAP]	= { TLV_TYPE_TLV },
+		[RSL_IE_OSMO_OSMUX_CID]		= { TLV_TYPE_TLV },
+		[RSL_IE_OSMO_RTP_EXTENSIONS]	= { TLV_TYPE_TLV },
+		[RSL_IE_IPAC_SRTP_CONFIG]	= { TLV_TYPE_TLV },
 		[RSL_IE_IPAC_PROXY_UDP]		= { TLV_TYPE_FIXED, 2 },
 		[RSL_IE_IPAC_BSCMPL_TOUT]	= { TLV_TYPE_TV },
 		[RSL_IE_IPAC_REMOTE_IP]		= { TLV_TYPE_FIXED, 4 },
@@ -127,6 +136,8 @@ const struct tlv_definition rsl_att_tlvdef = {
 		[RSL_IE_IPAC_LOCAL_PORT]	= { TLV_TYPE_FIXED, 2 },
 		[RSL_IE_IPAC_SPEECH_MODE]	= { TLV_TYPE_TV },
 		[RSL_IE_IPAC_LOCAL_IP]		= { TLV_TYPE_FIXED, 4 },
+		[RSL_IE_IPAC_CONN_STAT]		= { TLV_TYPE_TLV, 28 },
+		[RSL_IE_IPAC_HO_C_PARMS]	= { TLV_TYPE_TLV },
 		[RSL_IE_IPAC_CONN_ID]		= { TLV_TYPE_FIXED, 2 },
 		[RSL_IE_IPAC_RTP_CSD_FMT]	= { TLV_TYPE_TV },
 		[RSL_IE_IPAC_RTP_JIT_BUF]	= { TLV_TYPE_FIXED, 2 },
@@ -137,7 +148,11 @@ const struct tlv_definition rsl_att_tlvdef = {
 	},
 };
 
-/*! \brief Encode channel number as per Section 9.3.1 */
+/*! Encode channel number as per Section 9.3.1
+ *  \param[in] Channel Type (RSL_CHAN_...)
+ *  \param[in] subch Sub-Channel within Channel
+ *  \param[in] timeslot Air interface timeslot
+ *  \returns RSL Channel Number (TS 08.58 9.3.1) */
 uint8_t rsl_enc_chan_nr(uint8_t type, uint8_t subch, uint8_t timeslot)
 {
 	uint8_t ret;
@@ -146,6 +161,7 @@ uint8_t rsl_enc_chan_nr(uint8_t type, uint8_t subch, uint8_t timeslot)
 
 	switch (type) {
 	case RSL_CHAN_Lm_ACCHs:
+	case RSL_CHAN_OSMO_VAMOS_Lm_ACCHs:
 		subch &= 0x01;
 		break;
 	case RSL_CHAN_SDCCH4_ACCH:
@@ -164,7 +180,7 @@ uint8_t rsl_enc_chan_nr(uint8_t type, uint8_t subch, uint8_t timeslot)
 	return ret;
 }
 
-/*! \brief Decode RSL channel number
+/*! Decode RSL channel number
  *  \param[in] chan_nr Channel Number
  *  \param[out] type Channel Type
  *  \param[out] subch Sub-channel Number
@@ -174,58 +190,100 @@ int rsl_dec_chan_nr(uint8_t chan_nr, uint8_t *type, uint8_t *subch, uint8_t *tim
 {
 	*timeslot = chan_nr & 0x7;
 
-	if ((chan_nr & 0xf8) == RSL_CHAN_Bm_ACCHs) {
-		*type = RSL_CHAN_Bm_ACCHs;
+	switch (chan_nr & RSL_CHAN_NR_MASK) {
+	case RSL_CHAN_Bm_ACCHs:
+	case RSL_CHAN_BCCH:
+	case RSL_CHAN_RACH:
+	case RSL_CHAN_PCH_AGCH:
+	case RSL_CHAN_OSMO_PDCH:
+	case RSL_CHAN_OSMO_CBCH4:
+	case RSL_CHAN_OSMO_CBCH8:
+	case RSL_CHAN_OSMO_VAMOS_Bm_ACCHs:
+		*type = chan_nr & RSL_CHAN_NR_MASK;
 		*subch = 0;
-	} else if ((chan_nr & 0xf0) == RSL_CHAN_Lm_ACCHs) {
-		*type = RSL_CHAN_Lm_ACCHs;
-		*subch = (chan_nr >> 3) & 0x1;
-	} else if ((chan_nr & 0xe0) == RSL_CHAN_SDCCH4_ACCH) {
-		*type = RSL_CHAN_SDCCH4_ACCH;
-		*subch = (chan_nr >> 3) & 0x3;
-	} else if ((chan_nr & 0xc0) == RSL_CHAN_SDCCH8_ACCH) {
-		*type = RSL_CHAN_SDCCH8_ACCH;
-		*subch = (chan_nr >> 3) & 0x7;
-	} else if ((chan_nr & 0xf8) == RSL_CHAN_BCCH) {
-		*type = RSL_CHAN_BCCH;
-		*subch = 0;
-	} else if ((chan_nr & 0xf8) == RSL_CHAN_RACH) {
-		*type = RSL_CHAN_RACH;
-		*subch = 0;
-	} else if ((chan_nr & 0xf8) == RSL_CHAN_PCH_AGCH) {
-		*type = RSL_CHAN_PCH_AGCH;
-		*subch = 0;
-	} else
-		return -EINVAL;
+		break;
+	default:
+		if ((chan_nr & 0xf0) == RSL_CHAN_Lm_ACCHs) {
+			*type = RSL_CHAN_Lm_ACCHs;
+			*subch = (chan_nr >> 3) & 0x1;
+		} else if ((chan_nr & 0xe0) == RSL_CHAN_SDCCH4_ACCH) {
+			*type = RSL_CHAN_SDCCH4_ACCH;
+			*subch = (chan_nr >> 3) & 0x3;
+		} else if ((chan_nr & 0xc0) == RSL_CHAN_SDCCH8_ACCH) {
+			*type = RSL_CHAN_SDCCH8_ACCH;
+			*subch = (chan_nr >> 3) & 0x7;
+		} else if ((chan_nr & 0xf0) == RSL_CHAN_OSMO_VAMOS_Lm_ACCHs) {
+			*type = RSL_CHAN_OSMO_VAMOS_Lm_ACCHs;
+			*subch = (chan_nr >> 3) & 0x1;
+		} else
+			return -EINVAL;
+	}
 
 	return 0;
 }
 
-/*! \brief Get human-readable string for RSL channel number */
-const char *rsl_chan_nr_str(uint8_t chan_nr)
+/*! Get human-readable string for RSL channel number, in caller-provided buffer.
+ *  \param[out] buf caller-provided output buffer
+ *  \param[in] buf_len size of buf in bytes
+ *  \param[in] chan_nr channel number to be stringified
+ *  \returns buf with string
+ */
+char *rsl_chan_nr_str_buf(char *buf, size_t buf_len, uint8_t chan_nr)
 {
-	static char str[20];
 	int ts = chan_nr & 7;
 	uint8_t cbits = chan_nr >> 3;
 
-	if (cbits == 0x01)
-		sprintf(str, "TCH/F on TS%d", ts);
-	else if ((cbits & 0x1e) == 0x02)
-		sprintf(str, "TCH/H(%u) on TS%d", cbits & 0x01, ts);
-	else if ((cbits & 0x1c) == 0x04)
-		sprintf(str, "SDCCH/4(%u) on TS%d", cbits & 0x03, ts);
-	else if ((cbits & 0x18) == 0x08)
-		sprintf(str, "SDCCH/8(%u) on TS%d", cbits & 0x07, ts);
-	else if (cbits == 0x10)
-		sprintf(str, "BCCH on TS%d", ts);
-	else if (cbits == 0x11)
-		sprintf(str, "RACH on TS%d", ts);
-	else if (cbits == 0x12)
-		sprintf(str, "PCH/AGCH on TS%d", ts);
+	if (cbits == ABIS_RSL_CHAN_NR_CBITS_Bm_ACCHs)
+		snprintf(buf, buf_len, "TCH/F on TS%d", ts);
+	else if ((cbits & 0x1e) == ABIS_RSL_CHAN_NR_CBITS_Lm_ACCHs(0))
+		snprintf(buf, buf_len, "TCH/H(%u) on TS%d", cbits & 0x01, ts);
+	else if ((cbits & 0x1c) == ABIS_RSL_CHAN_NR_CBITS_SDCCH4_ACCH(0))
+		snprintf(buf, buf_len, "SDCCH/4(%u) on TS%d", cbits & 0x03, ts);
+	else if ((cbits & 0x18) == ABIS_RSL_CHAN_NR_CBITS_SDCCH8_ACCH(0))
+		snprintf(buf, buf_len, "SDCCH/8(%u) on TS%d", cbits & 0x07, ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_BCCH)
+		snprintf(buf, buf_len, "BCCH on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_RACH)
+		snprintf(buf, buf_len, "RACH on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_PCH_AGCH)
+		snprintf(buf, buf_len, "PCH/AGCH on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_OSMO_PDCH)
+		snprintf(buf, buf_len, "PDCH on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_OSMO_CBCH4)
+		snprintf(buf, buf_len, "CBCH(SDCCH/4) on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_OSMO_CBCH8)
+		snprintf(buf, buf_len, "CBCH(SDCCH/8) on TS%d", ts);
+	else if (cbits == ABIS_RSL_CHAN_NR_CBITS_OSMO_VAMOS_Bm_ACCHs)
+		snprintf(buf, buf_len, "VAMOS TCH/F on TS%d", ts);
+	else if ((cbits & 0x1e) == ABIS_RSL_CHAN_NR_CBITS_OSMO_VAMOS_Lm_ACCHs(0))
+		snprintf(buf, buf_len, "VAMOS TCH/H(%u) on TS%d", cbits & 0x01, ts);
 	else
-		sprintf(str, "UNKNOWN on TS%d", ts);
+		snprintf(buf, buf_len, "UNKNOWN on TS%d", ts);
 
-        return str;
+        return buf;
+}
+
+/*! Get human-readable string for RSL channel number, in static buffer.
+ *  \param[in] chan_nr channel number to be stringified
+ *  \returns buf with string
+ */
+const char *rsl_chan_nr_str(uint8_t chan_nr)
+{
+	static __thread char str[32];
+	return rsl_chan_nr_str_buf(str, sizeof(str), chan_nr);
+}
+
+/*! Get human-readable string for RSL channel number, in dynamically-allocated buffer.
+ *  \param[in] ctx talloc context from which to allocate output buffer
+ *  \param[in] chan_nr channel number to be stringified
+ *  \returns dynamically-allocated buffer with string representation
+ */
+char *rsl_chan_nr_str_c(const void *ctx, uint8_t chan_nr)
+{
+	char *str = talloc_size(ctx, 32);
+	if (!str)
+		return NULL;
+	return rsl_chan_nr_str_buf(str, 32, chan_nr);
 }
 
 static const struct value_string rsl_err_vals[] = {
@@ -242,6 +300,9 @@ static const struct value_string rsl_err_vals[] = {
 	{ RSL_ERR_CCCH_OVERLOAD,	"CCCH Overload" },
 	{ RSL_ERR_ACCH_OVERLOAD,	"ACCH Overload" },
 	{ RSL_ERR_PROCESSOR_OVERLOAD,	"Processor Overload" },
+	{ RSL_ERR_BTS_NOT_EQUIPPED,     "BTS not equipped" },
+	{ RSL_ERR_REMOTE_TRANSC_FAIL,   "Remote Transcoder Failure" },
+	{ RSL_ERR_NOTIFICATION_OVERFL,  "Notification Overflow" },
 	{ RSL_ERR_RES_UNAVAIL,		"Resource not available, unspecified" },
 	{ RSL_ERR_TRANSC_UNAVAIL,	"Transcoding not available" },
 	{ RSL_ERR_SERV_OPT_UNAVAIL,	"Service or Option not available" },
@@ -263,7 +324,7 @@ static const struct value_string rsl_err_vals[] = {
 	{ 0,				NULL }
 };
 
-/*! \brief Get human-readable name for RSL Error */
+/*! Get human-readable name for RSL Error */
 const char *rsl_err_name(uint8_t err)
 {
 	return get_value_string(rsl_err_vals, err);
@@ -336,17 +397,18 @@ static const struct value_string rsl_msgt_names[] = {
 	{ RSL_MT_TFO_REP,		"TFO_REP" },
 	{ RSL_MT_TFO_MOD_REQ,		"TFO_MOD_REQ" },
 	{ RSL_MT_LOCATION_INFO,		"LOCATION_INFO" },
+	{ RSL_MT_OSMO_ETWS_CMD,		"OSMO_ETWS_CMD" },
 	{ 0,				NULL }
 };
 
 
-/*! \brief Get human-readable string for RSL Message Type */
+/*! Get human-readable string for RSL Message Type */
 const char *rsl_msg_name(uint8_t msg_type)
 {
 	return get_value_string(rsl_msgt_names, msg_type);
 }
 
-/*! \brief ip.access specific */
+/*! ip.access specific */
 static const struct value_string rsl_ipac_msgt_names[] = {
 	{ RSL_MT_IPAC_PDCH_ACT,		"IPAC_PDCH_ACT" },
 	{ RSL_MT_IPAC_PDCH_ACT_ACK,	"IPAC_PDCH_ACT_ACK" },
@@ -373,13 +435,25 @@ static const struct value_string rsl_ipac_msgt_names[] = {
 	{ RSL_MT_IPAC_DLCX,		"IPAC_DLCX" },
 	{ RSL_MT_IPAC_DLCX_ACK,		"IPAC_DLCX_ACK" },
 	{ RSL_MT_IPAC_DLCX_NACK,	"IPAC_DLCX_NACK" },
+	{ RSL_MT_IPAC_DIR_RETR_ENQ,	"IPAC_DIR_RETR_ENQ" },
 	{ 0, NULL }
 };
 
-/*! \brief Get human-readable name of ip.access RSL msg type */
+/*! Get human-readable name of ip.access RSL msg type */
 const char *rsl_ipac_msg_name(uint8_t msg_type)
 {
 	return get_value_string(rsl_ipac_msgt_names, msg_type);
+}
+
+/*! Get human-readable name of standard or ip.access RSL msg type.
+ * If msg_type is a standard RSL message type, return its human-readable name.
+ * Otherwise return rsl_ipac_msg_name(msg_type). */
+const char *rsl_or_ipac_msg_name(uint8_t msg_type)
+{
+	const char *str = get_value_string_or_null(rsl_msgt_names, msg_type);
+	if (str)
+		return str;
+	return rsl_ipac_msg_name(msg_type);
 }
 
 static const struct value_string rsl_rlm_cause_strs[] = {
@@ -400,7 +474,7 @@ static const struct value_string rsl_rlm_cause_strs[] = {
 	{ 0,				NULL },
 };
 
-/*! \brief Get human-readable string for RLM cause */
+/*! Get human-readable string for RLM cause */
 const char *rsl_rlm_cause_name(uint8_t err)
 {
 	return get_value_string(rsl_rlm_cause_strs, err);
@@ -444,7 +518,12 @@ int rsl_ccch_conf_to_bs_ccch_sdcch_comb(int ccch_conf)
 	}
 }
 
-/*! \brief Push a RSL RLL header onto an existing msgb */
+/*! Push a RSL RLL header onto an existing msgb
+ *  \param msg Message Buffer to which RLL header shall be pushed
+ *  \param[in] msg_type RSL Message Type
+ *  \param[in] chan_nr RSL Channel Number
+ *  \param[in] link_id RSL Link Identifier
+ *  \param[in] transparent Transparent to BTS (1) or not (0) */
 void rsl_rll_push_hdr(struct msgb *msg, uint8_t msg_type, uint8_t chan_nr,
 		      uint8_t link_id, int transparent)
 {
@@ -461,7 +540,12 @@ void rsl_rll_push_hdr(struct msgb *msg, uint8_t msg_type, uint8_t chan_nr,
 	msg->l2h = (uint8_t *)rh;
 }
 
-/*! \brief Push a RSL RLL header with L3_INFO IE */
+/*! Wrap msgb in L3 Info IE and push a RSL RLL header
+ *  \param[in] msg Message Buffer to which L3 Header shall be appended
+ *  \param[in] msg_type RSL Message Type
+ *  \param[in] chan_hr RSL Channel Number
+ *  \param[in] link_id Link Identififer
+ *  \param[in] transparent Transparent to BTS (1) or not (0) */
 void rsl_rll_push_l3(struct msgb *msg, uint8_t msg_type, uint8_t chan_nr,
 		     uint8_t link_id, int transparent)
 {
@@ -470,14 +554,19 @@ void rsl_rll_push_l3(struct msgb *msg, uint8_t msg_type, uint8_t chan_nr,
 	/* construct a RSLms RLL message (DATA INDICATION, UNIT DATA
 	 * INDICATION) and send it off via RSLms */
 
-	/* Push the L3 IE tag and lengh */
+	/* Push the L3 IE tag and length */
 	msgb_tv16_push(msg, RSL_IE_L3_INFO, l3_len);
 
 	/* Then push the RSL header */
 	rsl_rll_push_hdr(msg, msg_type, chan_nr, link_id, transparent);
 }
 
-/*! \brief Create msgb with RSL RLL header */
+/*! Create msgb with RSL RLL header
+ *  \param[in] msg_type RSL Message Type
+ *  \param[in] chan_nr RSL Channel Number
+ *  \param[in] link_id RSL Link Identifier
+ *  \param[in] transparent Transparent to BTS (1) or not (0)
+ *  \returns callee-allocated msgb; NULL on error */
 struct msgb *rsl_rll_simple(uint8_t msg_type, uint8_t chan_nr,
 			    uint8_t link_id, int transparent)
 {
@@ -503,5 +592,55 @@ struct msgb *rsl_rll_simple(uint8_t msg_type, uint8_t chan_nr,
 
 	return msg;
 }
+
+/*! TLV parser definitions for IPA embedded IEs */
+const struct tlv_definition rsl_ipac_eie_tlvdef = {
+	.def = {
+		[RSL_IPAC_EIE_RXLEV]		= { TLV_TYPE_TV },
+		[RSL_IPAC_EIE_RXQUAL]		= { TLV_TYPE_TV },
+		[RSL_IPAC_EIE_FREQ_ERR]		= { TLV_TYPE_FIXED, 2 },
+		[RSL_IPAC_EIE_TIMING_ERR]	= { TLV_TYPE_TV },
+		[RSL_IPAC_EIE_MEAS_AVG_CFG]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_BS_PWR_CTL]	= { TLV_TYPE_FIXED, 3 },
+		[RSL_IPAC_EIE_MS_PWR_CTL]	= { TLV_TYPE_FIXED, 3 },
+		[RSL_IPAC_EIE_HANDO_THRESH]	= { TLV_TYPE_FIXED, 6 },
+		[RSL_IPAC_EIE_NCELL_DEFAULTS]	= { TLV_TYPE_FIXED, 3 },
+		[RSL_IPAC_EIE_NCELL_LIST]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_PC_THRESH_COMP]	= { TLV_TYPE_FIXED, 10 },
+		[RSL_IPAC_EIE_HO_THRESH_COMP]	= { TLV_TYPE_FIXED, 10 },
+		[RSL_IPAC_EIE_HO_CAUSE]		= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_HO_CANDIDATES]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_NCELL_BA_CHG_LIST]= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_NUM_OF_MS]	= { TLV_TYPE_TV },
+		[RSL_IPAC_EIE_HO_CAND_EXT]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_NCELL_DEF_EXT]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_NCELL_LIST_EXT]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_MASTER_KEY]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_MASTER_SALT]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_MEAS_TRANS_RES]	= {TLV_TYPE_TV},
+		[RSL_IPAC_EIE_3G_HO_PARAM]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_3G_NCELL_LIST]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_SDCCH_CTL_PARAM]	= { TLV_TYPE_TV },
+		[RSL_IPAC_EIE_AMR_CONV_THRESH] 	= { TLV_TYPE_FIXED, 9 },
+		/* Osmocom extensions: */
+		[RSL_IPAC_EIE_OSMO_MEAS_AVG_CFG]= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_OSMO_MS_PWR_CTL]	= { TLV_TYPE_TLV },
+		[RSL_IPAC_EIE_OSMO_PC_THRESH_COMP]= { TLV_TYPE_TLV },
+	},
+};
+
+/*! String names of RSL Channel Activation Types */
+const struct value_string rsl_act_type_names[] = {
+	{ RSL_ACT_TYPE_INITIAL,	"INITIAL" },
+	{ RSL_ACT_TYPE_REACT,	"REACT" },
+	{ RSL_ACT_INTRA_IMM_ASS,	"INTRA_IMM_ASS" },
+	{ RSL_ACT_INTRA_NORM_ASS,	"INTRA_NORM_ASS" },
+	{ RSL_ACT_INTER_ASYNC,	"INTER_ASYNC" },
+	{ RSL_ACT_INTER_SYNC,	"INTER_SYNC" },
+	{ RSL_ACT_SECOND_ADD,	"SECOND_ADD" },
+	{ RSL_ACT_SECOND_MULTI,	"SECOND_MULTI" },
+	{ RSL_ACT_OSMO_PDCH,	"OSMO_PDCH" },
+	{ 0, NULL }
+};
 
 /*! @} */

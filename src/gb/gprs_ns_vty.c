@@ -1,8 +1,12 @@
-/* VTY interface for our GPRS Networks Service (NS) implementation */
-
-/* (C) 2009-2010 by Harald Welte <laforge@gnumonks.org>
+/*! \file gprs_ns_vty.c
+ * VTY interface for our GPRS Networks Service (NS) implementation. */
+/*
+ * (C) 2009-2014 by Harald Welte <laforge@gnumonks.org>
+ * (C) 2016-2017 by sysmocom - s.f.m.c. GmbH
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,13 +31,14 @@
 #include <arpa/inet.h>
 
 #include <osmocom/core/msgb.h>
+#include <osmocom/core/byteswap.h>
 #include <osmocom/gsm/tlv.h>
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/select.h>
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/gprs/gprs_ns.h>
 #include <osmocom/gprs/gprs_bssgp.h>
-
+#include <osmocom/core/socket.h>
 #include <osmocom/vty/vty.h>
 #include <osmocom/vty/command.h>
 #include <osmocom/vty/logging.h>
@@ -41,6 +46,7 @@
 #include <osmocom/vty/misc.h>
 
 #include "common_vty.h"
+#include "gb_internal.h"
 
 static struct gprs_ns_inst *vty_nsi = NULL;
 
@@ -54,6 +60,7 @@ static const struct value_string gprs_ns_timer_strs[] = {
 	{ 4, "tns-test" },
 	{ 5, "tns-alive" },
 	{ 6, "tns-alive-retries" },
+	{ 7, "tsns-prov" },
 	{ 0, NULL }
 };
 
@@ -61,11 +68,11 @@ static void log_set_nsvc_filter(struct log_target *target,
 				struct gprs_nsvc *nsvc)
 {
 	if (nsvc) {
-		target->filter_map |= (1 << FLT_NSVC);
-		target->filter_data[FLT_NSVC] = nsvc;
-	} else if (target->filter_data[FLT_NSVC]) {
-		target->filter_map = ~(1 << FLT_NSVC);
-		target->filter_data[FLT_NSVC] = NULL;
+		target->filter_map |= (1 << LOG_FLT_GB_NSVC);
+		target->filter_data[LOG_FLT_GB_NSVC] = nsvc;
+	} else if (target->filter_data[LOG_FLT_GB_NSVC]) {
+		target->filter_map = ~(1 << LOG_FLT_GB_NSVC);
+		target->filter_data[LOG_FLT_GB_NSVC] = NULL;
 	}
 }
 
@@ -82,6 +89,32 @@ static int config_write_ns(struct vty *vty)
 	struct in_addr ia;
 
 	vty_out(vty, "ns%s", VTY_NEWLINE);
+
+	/* global configuration must be written first, as some of it may be
+	 * relevant when creating the NSE/NSVC later below */
+
+	if (vty_nsi->nsip.local_ip) {
+		ia.s_addr = osmo_htonl(vty_nsi->nsip.local_ip);
+		vty_out(vty, " encapsulation udp local-ip %s%s",
+			inet_ntoa(ia), VTY_NEWLINE);
+	}
+	if (vty_nsi->nsip.local_port)
+		vty_out(vty, " encapsulation udp local-port %u%s",
+			vty_nsi->nsip.local_port, VTY_NEWLINE);
+	if (vty_nsi->nsip.dscp)
+		vty_out(vty, " encapsulation udp dscp %d%s",
+			vty_nsi->nsip.dscp, VTY_NEWLINE);
+
+	vty_out(vty, " encapsulation udp use-reset-block-unblock %s%s",
+		vty_nsi->nsip.use_reset_block_unblock ? "enabled" : "disabled", VTY_NEWLINE);
+
+	vty_out(vty, " encapsulation framerelay-gre enabled %u%s",
+		vty_nsi->frgre.enabled ? 1 : 0, VTY_NEWLINE);
+	if (vty_nsi->frgre.local_ip) {
+		ia.s_addr = osmo_htonl(vty_nsi->frgre.local_ip);
+		vty_out(vty, " encapsulation framerelay-gre local-ip %s%s",
+			inet_ntoa(ia), VTY_NEWLINE);
+	}
 
 	llist_for_each_entry(nsvc, &vty_nsi->gprs_nsvcs, list) {
 		if (!nsvc->persistent)
@@ -100,7 +133,7 @@ static int config_write_ns(struct vty *vty)
 				inet_ntoa(nsvc->ip.bts_addr.sin_addr),
 				VTY_NEWLINE);
 			vty_out(vty, " nse %u remote-port %u%s",
-				nsvc->nsei, ntohs(nsvc->ip.bts_addr.sin_port),
+				nsvc->nsei, osmo_ntohs(nsvc->ip.bts_addr.sin_port),
 				VTY_NEWLINE);
 			break;
 		case GPRS_NS_LL_FR_GRE:
@@ -111,7 +144,7 @@ static int config_write_ns(struct vty *vty)
 				inet_ntoa(nsvc->frgre.bts_addr.sin_addr),
 				VTY_NEWLINE);
 			vty_out(vty, " nse %u fr-dlci %u%s",
-				nsvc->nsei, ntohs(nsvc->frgre.bts_addr.sin_port),
+				nsvc->nsei, osmo_ntohs(nsvc->frgre.bts_addr.sin_port),
 				VTY_NEWLINE);
 		default:
 			break;
@@ -122,26 +155,6 @@ static int config_write_ns(struct vty *vty)
 		vty_out(vty, " timer %s %u%s",
 			get_value_string(gprs_ns_timer_strs, i),
 			vty_nsi->timeout[i], VTY_NEWLINE);
-
-	if (vty_nsi->nsip.local_ip) {
-		ia.s_addr = htonl(vty_nsi->nsip.local_ip);
-		vty_out(vty, " encapsulation udp local-ip %s%s",
-			inet_ntoa(ia), VTY_NEWLINE);
-	}
-	if (vty_nsi->nsip.local_port)
-		vty_out(vty, " encapsulation udp local-port %u%s",
-			vty_nsi->nsip.local_port, VTY_NEWLINE);
-	if (vty_nsi->nsip.dscp)
-		vty_out(vty, " encapsulation udp dscp %d%s",
-			vty_nsi->nsip.dscp, VTY_NEWLINE);
-
-	vty_out(vty, " encapsulation framerelay-gre enabled %u%s",
-		vty_nsi->frgre.enabled ? 1 : 0, VTY_NEWLINE);
-	if (vty_nsi->frgre.local_ip) {
-		ia.s_addr = htonl(vty_nsi->frgre.local_ip);
-		vty_out(vty, " encapsulation framerelay-gre local-ip %s%s",
-			inet_ntoa(ia), VTY_NEWLINE);
-	}
 
 	return CMD_SUCCESS;
 }
@@ -154,48 +167,64 @@ DEFUN(cfg_ns, cfg_ns_cmd,
 	return CMD_SUCCESS;
 }
 
-static void dump_nse(struct vty *vty, struct gprs_nsvc *nsvc, int stats)
+static void dump_nse(struct vty *vty, const struct gprs_nsvc *nsvc, bool stats, bool persistent_only)
 {
-	vty_out(vty, "NSEI %5u, NS-VC %5u, Remote: %-4s, %5s %9s",
+	if (persistent_only)
+		if (!nsvc->persistent)
+			return;
+
+	vty_out(vty, "NSEI %5u, NS-VC %5u, %5s %9s, ",
 		nsvc->nsei, nsvc->nsvci,
+		NS_DESC_A(nsvc->state),
+		NS_DESC_B(nsvc->state));
+
+	if (nsvc->ll == GPRS_NS_LL_UDP) {
+		char local[INET6_ADDRSTRLEN + 1];
+		int rc = osmo_sock_local_ip((char *)&local, inet_ntoa(nsvc->ip.bts_addr.sin_addr));
+		vty_out(vty, "%s:%u ", (rc < 0) ? "unknown" : local, nsvc->nsi->nsip.local_port);
+	}
+
+	vty_out(vty, "Remote: %-4s, %5s %9s, %s ",
 		nsvc->remote_end_is_sgsn ? "SGSN" : "BSS",
-		nsvc->state & NSE_S_ALIVE ? "ALIVE" : "DEAD",
-		nsvc->state & NSE_S_BLOCKED ? "BLOCKED" : "UNBLOCKED");
-	if (nsvc->ll == GPRS_NS_LL_UDP || nsvc->ll == GPRS_NS_LL_FR_GRE)
-		vty_out(vty, ", %s %15s:%u",
-			nsvc->ll == GPRS_NS_LL_UDP ? "UDP   " : "FR-GRE",
-			inet_ntoa(nsvc->ip.bts_addr.sin_addr),
-			ntohs(nsvc->ip.bts_addr.sin_port));
-	vty_out(vty, "%s", VTY_NEWLINE);
-	if (stats)
+		NS_DESC_A(nsvc->remote_state),
+		NS_DESC_B(nsvc->remote_state), gprs_ns_ll_str(nsvc));
+
+	vty_out(vty, "%s%s", nsvc->ll == GPRS_NS_LL_UDP ? "UDP" : "FR-GRE", VTY_NEWLINE);
+
+	if (stats) {
 		vty_out_rate_ctr_group(vty, " ", nsvc->ctrg);
+		vty_out_stat_item_group(vty, " ", nsvc->statg);
+	}
 }
 
-static void dump_ns(struct vty *vty, struct gprs_ns_inst *nsi, int stats)
+static void dump_ns(struct vty *vty, const struct gprs_ns_inst *nsi, bool stats, bool persistent_only)
 {
 	struct gprs_nsvc *nsvc;
 	struct in_addr ia;
 
-	ia.s_addr = htonl(vty_nsi->nsip.local_ip);
+	ia.s_addr = osmo_htonl(vty_nsi->nsip.local_ip);
 	vty_out(vty, "Encapsulation NS-UDP-IP     Local IP: %s, UDP Port: %u%s",
 		inet_ntoa(ia), vty_nsi->nsip.local_port, VTY_NEWLINE);
 
-	ia.s_addr = htonl(vty_nsi->frgre.local_ip);
-	vty_out(vty, "Encapsulation NS-FR-GRE-IP  Local IP: %s%s",
-		inet_ntoa(ia), VTY_NEWLINE);
+	if (nsi->frgre.enabled) {
+		ia.s_addr = osmo_htonl(vty_nsi->frgre.local_ip);
+		vty_out(vty, "Encapsulation NS-FR-GRE-IP  Local IP: %s%s", inet_ntoa(ia), VTY_NEWLINE);
+	}
 
 	llist_for_each_entry(nsvc, &nsi->gprs_nsvcs, list) {
 		if (nsvc == nsi->unknown_nsvc)
 			continue;
-		dump_nse(vty, nsvc, stats);
+		dump_nse(vty, nsvc, stats, persistent_only);
 	}
+
+	gprs_sns_dump_vty(vty, nsi, stats);
 }
 
 DEFUN(show_ns, show_ns_cmd, "show ns",
 	SHOW_STR "Display information about the NS protocol")
 {
 	struct gprs_ns_inst *nsi = vty_nsi;
-	dump_ns(vty, nsi, 0);
+	dump_ns(vty, nsi, false, false);
 	return CMD_SUCCESS;
 }
 
@@ -205,7 +234,17 @@ DEFUN(show_ns_stats, show_ns_stats_cmd, "show ns stats",
 	"Include statistics\n")
 {
 	struct gprs_ns_inst *nsi = vty_nsi;
-	dump_ns(vty, nsi, 1);
+	dump_ns(vty, nsi, true, false);
+	return CMD_SUCCESS;
+}
+
+DEFUN(show_ns_pers, show_ns_pers_cmd, "show ns persistent",
+	SHOW_STR
+	"Display information about the NS protocol\n"
+	"Show only persistent NS\n")
+{
+	struct gprs_ns_inst *nsi = vty_nsi;
+	dump_ns(vty, nsi, true, true);
 	return CMD_SUCCESS;
 }
 
@@ -219,7 +258,7 @@ DEFUN(show_nse, show_nse_cmd, "show ns (nsei|nsvc) <0-65535> [stats]",
 	struct gprs_ns_inst *nsi = vty_nsi;
 	struct gprs_nsvc *nsvc;
 	uint16_t id = atoi(argv[1]);
-	int show_stats = 0;
+	bool show_stats = false;
 
 	if (!strcmp(argv[0], "nsei"))
 		nsvc = gprs_nsvc_by_nsei(nsi, id);
@@ -232,9 +271,9 @@ DEFUN(show_nse, show_nse_cmd, "show ns (nsei|nsvc) <0-65535> [stats]",
 	}
 
 	if (argc >= 3)
-		show_stats = 1;
+		show_stats = true;
 
-	dump_nse(vty, nsvc, show_stats);
+	dump_nse(vty, nsvc, show_stats, false);
 	return CMD_SUCCESS;
 }
 
@@ -253,7 +292,7 @@ DEFUN(cfg_nse_nsvc, cfg_nse_nsvci_cmd,
 
 	nsvc = gprs_nsvc_by_nsei(vty_nsi, nsei);
 	if (!nsvc) {
-		nsvc = gprs_nsvc_create(vty_nsi, nsvci);
+		nsvc = gprs_nsvc_create2(vty_nsi, nsvci, 1, 1);
 		nsvc->nsei = nsei;
 	}
 	nsvc->nsvci = nsvci;
@@ -279,6 +318,7 @@ DEFUN(cfg_nse_remoteip, cfg_nse_remoteip_cmd,
 		vty_out(vty, "No such NSE (%u)%s", nsei, VTY_NEWLINE);
 		return CMD_WARNING;
 	}
+	nsvc->ip.bts_addr.sin_family = AF_INET;
 	inet_aton(argv[1], &nsvc->ip.bts_addr.sin_addr);
 
 	return CMD_SUCCESS;
@@ -307,7 +347,7 @@ DEFUN(cfg_nse_remoteport, cfg_nse_remoteport_cmd,
 		return CMD_WARNING;
 	}
 
-	nsvc->ip.bts_addr.sin_port = htons(port);
+	nsvc->ip.bts_addr.sin_port = osmo_htons(port);
 
 	return CMD_SUCCESS;
 }
@@ -334,7 +374,7 @@ DEFUN(cfg_nse_fr_dlci, cfg_nse_fr_dlci_cmd,
 		return CMD_WARNING;
 	}
 
-	nsvc->frgre.bts_addr.sin_port = htons(dlci);
+	nsvc->frgre.bts_addr.sin_port = osmo_htons(dlci);
 
 	return CMD_SUCCESS;
 }
@@ -439,7 +479,7 @@ DEFUN(cfg_nsip_local_ip, cfg_nsip_local_ip_cmd,
 	struct in_addr ia;
 
 	inet_aton(argv[0], &ia);
-	vty_nsi->nsip.local_ip = ntohl(ia.s_addr);
+	vty_nsi->nsip.local_ip = osmo_ntohl(ia.s_addr);
 
 	return CMD_SUCCESS;
 }
@@ -467,6 +507,21 @@ DEFUN(cfg_nsip_dscp, cfg_nsip_dscp_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN(cfg_nsip_res_block_unblock, cfg_nsip_res_block_unblock_cmd,
+	"encapsulation udp use-reset-block-unblock (enabled|disabled)",
+	ENCAPS_STR "NS over UDP Encapsulation\n"
+	"Use NS-{RESET,BLOCK,UNBLOCK} procedures in violation of 3GPP TS 48.016\n"
+	"Enable NS-{RESET,BLOCK,UNBLOCK}\n"
+	"Disable NS-{RESET,BLOCK,UNBLOCK}\n")
+{
+	if (!strcmp(argv[0], "enabled"))
+		vty_nsi->nsip.use_reset_block_unblock = true;
+	else
+		vty_nsi->nsip.use_reset_block_unblock = false;
+
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_frgre_local_ip, cfg_frgre_local_ip_cmd,
       "encapsulation framerelay-gre local-ip A.B.C.D",
 	ENCAPS_STR "NS over Frame Relay over GRE Encapsulation\n"
@@ -475,12 +530,8 @@ DEFUN(cfg_frgre_local_ip, cfg_frgre_local_ip_cmd,
 {
 	struct in_addr ia;
 
-	if (!vty_nsi->frgre.enabled) {
-		vty_out(vty, "FR/GRE is not enabled%s", VTY_NEWLINE);
-		return CMD_WARNING;
-	}
 	inet_aton(argv[0], &ia);
-	vty_nsi->frgre.local_ip = ntohl(ia.s_addr);
+	vty_nsi->frgre.local_ip = osmo_ntohl(ia.s_addr);
 
 	return CMD_SUCCESS;
 }
@@ -527,6 +578,12 @@ DEFUN(nsvc_nsei, nsvc_nsei_cmd,
 		return CMD_WARNING;
 	}
 
+	if (nsvc->nsi->bss_sns_fi) {
+		vty_out(vty, "A NS Instance using the IP Sub-Network doesn't use BLOCK/UNBLOCK/RESET%s",
+			VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
 	if (!strcmp(operation, "block"))
 		gprs_ns_tx_block(nsvc, NS_CAUSE_OM_INTERVENTION);
 	else if (!strcmp(operation, "unblock"))
@@ -548,12 +605,16 @@ DEFUN(logging_fltr_nsvc,
 	"Identify NS-VC by NSVCI\n"
 	"Numeric identifier\n")
 {
-	struct log_target *tgt = osmo_log_vty2tgt(vty);
+	struct log_target *tgt;
 	struct gprs_nsvc *nsvc;
 	uint16_t id = atoi(argv[1]);
 
-	if (!tgt)
+	log_tgt_mutex_lock();
+	tgt = osmo_log_vty2tgt(vty);
+	if (!tgt) {
+		log_tgt_mutex_unlock();
 		return CMD_WARNING;
+	}
 
 	if (!strcmp(argv[0], "nsei"))
 		nsvc = gprs_nsvc_by_nsei(vty_nsi, id);
@@ -562,44 +623,53 @@ DEFUN(logging_fltr_nsvc,
 
 	if (!nsvc) {
 		vty_out(vty, "No NS-VC by that identifier%s", VTY_NEWLINE);
+		log_tgt_mutex_unlock();
 		return CMD_WARNING;
 	}
 
 	log_set_nsvc_filter(tgt, nsvc);
+	log_tgt_mutex_unlock();
 	return CMD_SUCCESS;
 }
 
 int gprs_ns_vty_init(struct gprs_ns_inst *nsi)
 {
+	static bool vty_elements_installed = false;
+
 	vty_nsi = nsi;
 
-	install_element_ve(&show_ns_cmd);
-	install_element_ve(&show_ns_stats_cmd);
-	install_element_ve(&show_nse_cmd);
-	install_element_ve(&logging_fltr_nsvc_cmd);
+	/* Regression test code may call this function repeatedly, so make sure
+	 * that VTY elements are not duplicated, which would assert. */
+	if (vty_elements_installed)
+		return 0;
+	vty_elements_installed = true;
 
-	install_element(CFG_LOG_NODE, &logging_fltr_nsvc_cmd);
+	install_lib_element_ve(&show_ns_cmd);
+	install_lib_element_ve(&show_ns_stats_cmd);
+	install_lib_element_ve(&show_ns_pers_cmd);
+	install_lib_element_ve(&show_nse_cmd);
+	install_lib_element_ve(&logging_fltr_nsvc_cmd);
 
-	install_element(CONFIG_NODE, &cfg_ns_cmd);
+	install_lib_element(CFG_LOG_NODE, &logging_fltr_nsvc_cmd);
+
+	install_lib_element(CONFIG_NODE, &cfg_ns_cmd);
 	install_node(&ns_node, config_write_ns);
-	install_default(L_NS_NODE);
-	install_element(L_NS_NODE, &libgb_exit_cmd);
-	install_element(L_NS_NODE, &libgb_end_cmd);
-	install_element(L_NS_NODE, &cfg_nse_nsvci_cmd);
-	install_element(L_NS_NODE, &cfg_nse_remoteip_cmd);
-	install_element(L_NS_NODE, &cfg_nse_remoteport_cmd);
-	install_element(L_NS_NODE, &cfg_nse_fr_dlci_cmd);
-	install_element(L_NS_NODE, &cfg_nse_encaps_cmd);
-	install_element(L_NS_NODE, &cfg_nse_remoterole_cmd);
-	install_element(L_NS_NODE, &cfg_no_nse_cmd);
-	install_element(L_NS_NODE, &cfg_ns_timer_cmd);
-	install_element(L_NS_NODE, &cfg_nsip_local_ip_cmd);
-	install_element(L_NS_NODE, &cfg_nsip_local_port_cmd);
-	install_element(L_NS_NODE, &cfg_nsip_dscp_cmd);
-	install_element(L_NS_NODE, &cfg_frgre_enable_cmd);
-	install_element(L_NS_NODE, &cfg_frgre_local_ip_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_nsvci_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_remoteip_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_remoteport_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_fr_dlci_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_encaps_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nse_remoterole_cmd);
+	install_lib_element(L_NS_NODE, &cfg_no_nse_cmd);
+	install_lib_element(L_NS_NODE, &cfg_ns_timer_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nsip_local_ip_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nsip_local_port_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nsip_dscp_cmd);
+	install_lib_element(L_NS_NODE, &cfg_nsip_res_block_unblock_cmd);
+	install_lib_element(L_NS_NODE, &cfg_frgre_enable_cmd);
+	install_lib_element(L_NS_NODE, &cfg_frgre_local_ip_cmd);
 
-	install_element(ENABLE_NODE, &nsvc_nsei_cmd);
+	install_lib_element(ENABLE_NODE, &nsvc_nsei_cmd);
 
 	return 0;
 }

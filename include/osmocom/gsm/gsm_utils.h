@@ -1,4 +1,5 @@
-/* GSM utility functions, e.g. coding and decoding */
+/*! \file gsm_utils.h
+ * GSM utility functions, e.g. coding and decoding. */
 /*
  * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009 by Holger Hans Peter Freyther <zecke@selfish.org>
@@ -16,10 +17,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #pragma once
@@ -28,6 +25,7 @@
 #include <stdint.h>
 
 #include <osmocom/core/defs.h>
+#include <osmocom/core/utils.h>
 
 #define ADD_MODULO(sum, delta, modulo) do {	\
 	if ((sum += delta) >= modulo)		\
@@ -35,6 +33,10 @@
 	} while (0)
 
 #define GSM_MAX_FN	(26*51*2048)
+#define GSM_FN_UNSET	0xFFFFFFFF
+
+/* Max length of random identifier which can be requested via osmo_get_rand_id() */
+#define OSMO_MAX_RAND_ID_LEN 16
 
 struct gsm_time {
 	uint32_t	fn;	/* FN count */
@@ -58,15 +60,18 @@ enum gsm_band {
 const char *gsm_band_name(enum gsm_band band);
 enum gsm_band gsm_band_parse(const char *mhz);
 
+int osmo_get_rand_id(uint8_t *out, size_t len);
+
 /*!
- * \brief Decode a sequence of GSM 03.38 encoded 7 bit characters.
+ * Decode a sequence of GSM 03.38 encoded 7 bit characters.
  *
  * \param decoded	The destination buffer for the decoded characters.
  * \param n		A maximum of n chars is written (incl. terminating \0).
  * 			Requires n >= 1.
  * \param user_data	A pointer to the start of the packed 7bit character
  *			sequence.
- * \param length	The length of the input sequence (in octets).
+ * \param length	The length of the input sequence in septets, for
+ *			example pass octet_length*8/7.
  *
  * \returns the number of (8 bit) chars written excluding the terminating \0.
  * 	    This is the same like strlen(decoded).
@@ -74,14 +79,14 @@ enum gsm_band gsm_band_parse(const char *mhz);
 int gsm_7bit_decode_n(char *decoded, size_t n, const uint8_t *user_data, uint8_t length);
 
 /*!
- * \brief Decode a sequence of 7 bit characters (USSD encoding).
+ * Decode a sequence of 7 bit characters (USSD encoding).
  *
  * \see gsm_7bit_encode_n()
  */
 int gsm_7bit_decode_n_ussd(char *decoded, size_t n, const uint8_t *user_data, uint8_t length);
 
 /*!
- * \brief Encode a text string into GSM 03.38 encoded 7 bit characters.
+ * Encode a text string into GSM 03.38 encoded 7 bit characters.
  *
  * \param result	The destination buffer for the packed 7 bit sequence.
  * \param n		A maximum of n octets is written.
@@ -95,20 +100,22 @@ int gsm_7bit_decode_n_ussd(char *decoded, size_t n, const uint8_t *user_data, ui
 int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets_written);
 
 /*!
- * \brief Encode a text string into GSM 03.38 encoded 7 bit characters (USSD encoding).
+ * Encode a text string into GSM 03.38 encoded 7 bit characters (USSD encoding).
  *
  * \see gsm_7bit_decode_n()
  */
 int gsm_7bit_encode_n_ussd(uint8_t *result, size_t n, const char *data, int *octets_written);
 
 /* the four functions below are helper functions and here for the unit test */
-int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len, uint8_t padding);
+int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len, uint8_t padding)
+	OSMO_DEPRECATED("This function is unable to handle more than 255 septets, "
+			"use gsm_septet_pack() instead.");
+int gsm_septet_pack(uint8_t *result, const uint8_t *rdata, size_t septet_len, uint8_t padding);
 int gsm_septet_encode(uint8_t *result, const char *data);
 uint8_t gsm_get_octet_len(const uint8_t sept_len);
 int gsm_7bit_decode_n_hdr(char *decoded, size_t n, const uint8_t *user_data, uint8_t length, uint8_t ud_hdr_ind);
 
-unsigned int ms_class_gmsk_dbm(enum gsm_band band, int ms_class);
-
+int ms_class_gmsk_dbm(enum gsm_band band, int ms_class);
 int ms_pwr_ctl_lvl(enum gsm_band band, unsigned int dbm);
 int ms_pwr_dbm(enum gsm_band band, uint8_t lvl);
 
@@ -117,12 +124,24 @@ int rxlev2dbm(uint8_t rxlev);
 uint8_t dbm2rxlev(int dbm);
 
 /* According to GSM 04.08 Chapter 10.5.1.6 */
-static inline int ms_cm2_a5n_support(uint8_t *cm2, int n) {
+static inline int ms_cm2_a5n_support(uint8_t *cm2, unsigned n) {
 	switch (n) {
 		case 0: return 1;
 		case 1: return (cm2[0] & (1<<3)) ? 0 : 1;
 		case 2: return (cm2[2] & (1<<0)) ? 1 : 0;
 		case 3: return (cm2[2] & (1<<1)) ? 1 : 0;
+		default:
+			return 0;
+	}
+}
+
+/* According to GSM 04.08 Chapter 10.5.1.7 */
+static inline int ms_cm3_a5n_support(uint8_t *cm3, unsigned n) {
+	switch (n) {
+		case 4: return (cm3[0] & (1<<0)) ? 1 : 0;
+		case 5: return (cm3[0] & (1<<1)) ? 1 : 0;
+		case 6: return (cm3[0] & (1<<2)) ? 1 : 0;
+	        case 7: return (cm3[0] & (1<<3)) ? 1 : 0;
 		default:
 			return 0;
 	}
@@ -134,12 +153,20 @@ static inline int rach_max_trans_raw2val(int raw) {
 	const int tbl[4] = { 1, 2, 4, 7 };
 	return tbl[raw & 3];
 }
+static inline uint8_t rach_tx_integer_raw2val(uint8_t raw) {
+	const int tbl[6] = { 14, 16, 20, 25, 32, 50 };
+	raw &= 0x0f;
+	if (raw <= 9)
+		return raw + 3;
+	return tbl[raw - 10];
+}
 
 #define	ARFCN_PCS	0x8000
 #define	ARFCN_UPLINK	0x4000
 #define	ARFCN_FLAG_MASK	0xf000	/* Reserve the upper 5 bits for flags */
 
-enum gsm_band gsm_arfcn2band(uint16_t arfcn);
+int gsm_arfcn2band_rc(uint16_t arfcn, enum gsm_band *band);
+enum gsm_band gsm_arfcn2band(uint16_t arfcn) OSMO_DEPRECATED("Use gsm_arfcn2band_rc() instead");
 
 /* Convert an ARFCN to the frequency in MHz * 10 */
 uint16_t gsm_arfcn2freq10(uint16_t arfcn, int uplink);
@@ -150,8 +177,24 @@ uint16_t gsm_freq102arfcn(uint16_t freq10, int uplink);
 /* Convert from frame number to GSM time */
 void gsm_fn2gsmtime(struct gsm_time *time, uint32_t fn);
 
+/* Parse GSM Frame Number into printable string */
+char *gsm_fn_as_gsmtime_str(uint32_t fn);
+
 /* Convert from GSM time to frame number */
-uint32_t gsm_gsmtime2fn(struct gsm_time *time);
+uint32_t gsm_gsmtime2fn(const struct gsm_time *time);
+
+/* Returns static buffer with string representation of a GSM Time */
+char *osmo_dump_gsmtime(const struct gsm_time *tm);
+char *osmo_dump_gsmtime_buf(char *buf, size_t buf_len, const struct gsm_time *tm);
+char *osmo_dump_gsmtime_c(const void *ctx, const struct gsm_time *tm);
+
+/* Reduced Frame Number (3GPP TS 44.018 §10.5.2.38) */
+#define GSM_RFN_MODULUS 42432
+uint32_t gsm_rfn2fn(uint16_t rfn, uint32_t curr_fn);
+static inline uint16_t gsm_fn2rfn(uint32_t fn)
+{
+	return fn % GSM_RFN_MODULUS;
+}
 
 /* GSM TS 03.03 Chapter 2.6 */
 enum gprs_tlli_type {
@@ -168,6 +211,7 @@ enum gprs_tlli_type {
 int gprs_tlli_type(uint32_t tlli);
 
 uint32_t gprs_tmsi2tlli(uint32_t p_tmsi, enum gprs_tlli_type type);
+uint32_t gprs_tlli2tmsi(uint32_t tlli);
 
 /* Osmocom internal, not part of any gsm spec */
 enum gsm_phys_chan_config {
@@ -182,8 +226,11 @@ enum gsm_phys_chan_config {
 	GSM_PCHAN_UNKNOWN,
 	GSM_PCHAN_CCCH_SDCCH4_CBCH,
 	GSM_PCHAN_SDCCH8_SACCH8C_CBCH,
+	GSM_PCHAN_OSMO_DYN,
 	_GSM_PCHAN_MAX
 };
+/* Backward compatibility with older naming: */
+#define GSM_PCHAN_TCH_F_TCH_H_PDCH GSM_PCHAN_OSMO_DYN
 
 /* Osmocom internal, not part of any gsm spec */
 enum gsm_chan_t {
@@ -198,6 +245,10 @@ enum gsm_chan_t {
 	_GSM_LCHAN_MAX
 };
 
+extern const struct value_string gsm_chan_t_names[];
+static inline const char *gsm_chan_t_name(enum gsm_chan_t val)
+{ return get_value_string(gsm_chan_t_names, val); }
+
 /* Deprectated functions */
 /* Limit encoding and decoding to use no more than this amount of buffer bytes */
 #define GSM_7BIT_LEGACY_MAX_BUFFER_SIZE  0x10000
@@ -207,3 +258,17 @@ int gsm_7bit_decode_ussd(char *decoded, const uint8_t *user_data, uint8_t length
 int gsm_7bit_encode(uint8_t *result, const char *data) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
 int gsm_7bit_encode_ussd(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n_ussd() instead");
 int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
+
+enum osmo_rat_type {
+	OSMO_RAT_UNKNOWN = 0,
+	OSMO_RAT_GERAN_A,
+	OSMO_RAT_UTRAN_IU,
+	OSMO_RAT_EUTRAN_SGS,
+
+	/* keep this last */
+	OSMO_RAT_COUNT
+};
+
+extern const struct value_string osmo_rat_type_names[];
+inline static const char *osmo_rat_type_name(enum osmo_rat_type val)
+{ return get_value_string(osmo_rat_type_names, val); }

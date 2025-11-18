@@ -1,9 +1,11 @@
-/* GSM 06.20 - GSM HR codec */
-
+/*! \file gsm620.c
+ * GSM 06.20 - GSM HR codec. */
 /*
  * (C) 2010 Sylvain Munaut <tnt@246tNt.com>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,13 +17,13 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+#include <osmocom/codec/codec.h>
 
 /* GSM HR unvoiced (mode=0) frames - subjective importance bit ordering */
 	/* This array encode mapping between GSM 05.03 Table 3a (bits
@@ -260,3 +262,95 @@ const uint16_t gsm620_voiced_bitorder[112] = {
 	82,	/* Code 3:6 */
 	81,	/* Code 3:7 */
 };
+
+/*
+ * There is no officially defined silence frame for GSM-HR codec like there is
+ * for GSM-FR.  However, if one feeds all-zeros (complete silence) linear PCM
+ * input to the official GSM-HR encoder, the result will be an endless stream
+ * of these frames:
+ *
+ * R0=00 LPC=164,171,cb Int=0 Mode=0
+ * s1=00,00,00 s2=00,00,00 s3=00,00,00 s4=00,00,00
+ *
+ * The following const datum is the above unofficial GSM-HR silence frame in
+ * the packed RTP format of TS 101 318.
+ */
+const uint8_t osmo_gsm620_silence_frame[GSM_HR_BYTES] = {
+	0x01, 0x64, 0xB8, 0xE5, 0x80, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+/*
+ * GSM 06.20 defines, by reference to GSM 06.06 C code and GSM 06.07 test
+ * sequences, a special frame of codec parameters called the decoder homing
+ * frame (DHF).  When a spec-compliant speech decoder processes this frame,
+ * it resets itself to the spec-defined home state.
+ *
+ * The following const datum is GSM-HR DHF in the packed RTP format of
+ * TS 101 318.
+ */
+const uint8_t osmo_gsm620_homing_frame[GSM_HR_BYTES] = {
+	0x03, 0x71, 0xAF, 0x61, 0xC8, 0xF2, 0x80,
+	0x25, 0x31, 0xC0, 0x00, 0x00, 0x00, 0x00
+};
+
+/*! Check whether RTP frame contains HR SID code word according to
+ *  TS 101 318 §5.2.2
+ *  \param[in] rtp_payload Buffer with RTP payload
+ *  \param[in] payload_len Length of payload
+ *  \returns true if code word is found, false otherwise
+ *
+ *  Note that this function checks only for a perfect, error-free SID.
+ *  Unlike GSM 06.31 for FR or GSM 06.81 for EFR, GSM 06.41 spec for HR
+ *  does not prescribe exact bit counting rules, hence detection of
+ *  partially corrupted SID frames in downstream network elements
+ *  without out-of-band indication is not possible.
+ */
+bool osmo_hr_check_sid(const uint8_t *rtp_payload, size_t payload_len)
+{
+	static const uint8_t all_ff_bytes[9] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+						0xFF, 0xFF, 0xFF, 0xFF};
+
+	if (payload_len < GSM_HR_BYTES)
+		return false;
+
+	/* A SID frame is identified by a SID codeword consisting of 79 bits
+	 * which are all 1, so we basically check if all bits in range
+	 * r34..r112 (inclusive) are 1.  However, given the position of
+	 * these bits in the frame, the most efficient way to perform
+	 * this check does not use any bit-level operations. */
+	if ((rtp_payload[4] & 0x7F) != 0x7F)
+		return false;
+	if (memcmp(rtp_payload + 5, all_ff_bytes, 9) == 0)
+		return true;
+	else
+		return false;
+}
+
+/*! Reset the SID field of a potentially corrupted, but still valid GSM-HR
+ *  SID frame in TS 101 318 format to its pristine state (full SID codeword).
+ *  \param[in] rtp_payload Buffer with RTP payload - must be writable!
+ *
+ *  Per GSM 06.22 section 5.3, a freshly minted SID frame consists of 33 bits
+ *  of comfort noise parameters and 79 bits of SID codeword (all 1s).  Network
+ *  elements that receive SID frames from call leg A uplink and need to
+ *  retransmit them on leg B downlink should "rejuvenate" received SID frames
+ *  prior to retransmission by resetting the SID field to its pristine state
+ *  of all 1s; this function does the job.
+ *
+ *  Important note: because of HR-specific quirks (lack of exact bit counting
+ *  rules in GSM 06.41 spec compared to 06.31 & 06.81, plus the fact that such
+ *  bit counting can only be done efficiently in the GSM 05.03 channel decoder
+ *  prior to bit reordering based on voiced or unvoiced mode), a generic
+ *  (usable from any network element) SID classification function similar to
+ *  osmo_{fr,efr}_sid_classify() unfortunately cannot exist for HR.  Therefore,
+ *  the triggering condition for invoking this SID rejuvenation/reset function
+ *  can only be an out-of-band SID indication, as in GSM 08.61 TRAU frames
+ *  or RFC 5993 ToC octet.
+ */
+void osmo_hr_sid_reset(uint8_t *rtp_payload)
+{
+	/* set all 79 SID codeword bits to 1 */
+	rtp_payload[4] |= 0x7F;
+	memset(rtp_payload + 5, 0xFF, 9);
+}

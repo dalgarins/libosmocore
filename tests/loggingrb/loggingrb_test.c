@@ -5,17 +5,14 @@
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -33,19 +30,19 @@ static const struct log_info_cat default_categories[] = {
 	[DRLL] = {
 		  .name = "DRLL",
 		  .description = "A-bis Radio Link Layer (RLL)",
-		  .color = "\033[1;31m",
+		  .color = OSMO_LOGCOLOR_RED,
 		  .enabled = 1, .loglevel = LOGL_NOTICE,
 		  },
 	[DCC] = {
 		 .name = "DCC",
 		 .description = "Layer3 Call Control (CC)",
-		 .color = "\033[1;32m",
+		 .color = OSMO_LOGCOLOR_GREEN,
 		 .enabled = 1, .loglevel = LOGL_NOTICE,
 		 },
 	[DMM] = {
 		 .name = NULL,
 		 .description = "Layer3 Mobility Management (MM)",
-		 .color = "\033[1;33m",
+		 .color = OSMO_LOGCOLOR_BLUE,
 		 .enabled = 1, .loglevel = LOGL_NOTICE,
 		 },
 };
@@ -63,7 +60,9 @@ int main(int argc, char **argv)
 	ringbuf_target = log_target_create_rb(0x1000);
 	log_add_target(ringbuf_target);
 	log_set_all_filter(ringbuf_target, 1);
-	log_set_print_filename(ringbuf_target, 0);
+	log_set_print_filename2(ringbuf_target, LOG_FILENAME_NONE);
+	log_set_print_category(ringbuf_target, 0);
+	log_set_print_category_hex(ringbuf_target, 0);
 
 	log_parse_category_mask(ringbuf_target, "DRLL:DCC");
 	log_parse_category_mask(ringbuf_target, "DRLL");

@@ -1,3 +1,7 @@
+/*! \addtogroup sms
+ *  @{
+ * \file gsm0411_utils.h */
+
 #pragma once
 
 #include <time.h>
@@ -33,3 +37,5 @@ int gsm411_push_rp_header(struct msgb *msg, uint8_t rp_msg_type,
 /* Prefix msg with a 04.08/04.11 CP header */
 int gsm411_push_cp_header(struct msgb *msg, uint8_t proto, uint8_t trans,
 			     uint8_t msg_type);
+
+/*! @} */

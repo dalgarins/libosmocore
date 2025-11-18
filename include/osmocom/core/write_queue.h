@@ -1,4 +1,5 @@
-/* Generic write queue implementation */
+/*! \file write_queue.h
+ * Generic write queue implementation */
 /*
  * (C) 2010 by Holger Hans Peter Freyther
  * (C) 2010 by On-Waves
@@ -15,46 +16,41 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 #pragma once
 
 /*! \defgroup write_queue Osmocom msgb write queues
  *  @{
- */
-
-/*! \file write_queue.h
- */
+ * \file write_queue.h */
 
 #include <osmocom/core/select.h>
 #include <osmocom/core/msgb.h>
 
 /*! write queue instance */
 struct osmo_wqueue {
-	/*! \brief osmocom file descriptor */
+	/*! osmocom file descriptor */
 	struct osmo_fd bfd;
-	/*! \brief maximum length of write queue */
+	/*! maximum length of write queue */
 	unsigned int max_length;
-	/*! \brief current length of write queue */
+	/*! current length of write queue */
 	unsigned int current_length;
 
-	/*! \brief actual linked list implementing the queue */
+	/*! actual linked list implementing the queue */
 	struct llist_head msg_queue;
 
-	/*! \brief call-back in case qeueue is readable */
+	/*! call-back in case qeueue is readable. Return -EBADF if fd is freed inside cb. */
 	int (*read_cb)(struct osmo_fd *fd);
-	/*! \brief call-back in case qeueue is writable */
+	/*! call-back in case qeueue is writable. Return -EBADF if fd is freed inside cb. */
 	int (*write_cb)(struct osmo_fd *fd, struct msgb *msg);
-	/*! \brief call-back in case qeueue has exceptions */
+	/*! call-back in case qeueue has exceptions. Return -EBADF if fd is freed inside cb. */
 	int (*except_cb)(struct osmo_fd *fd);
 };
 
 void osmo_wqueue_init(struct osmo_wqueue *queue, int max_length);
 void osmo_wqueue_clear(struct osmo_wqueue *queue);
 int osmo_wqueue_enqueue(struct osmo_wqueue *queue, struct msgb *data);
+int osmo_wqueue_enqueue_quiet(struct osmo_wqueue *queue, struct msgb *data);
+size_t osmo_wqueue_set_maxlen(struct osmo_wqueue *queue, unsigned int len);
 int osmo_wqueue_bfd_cb(struct osmo_fd *fd, unsigned int what);
 
 /*! @} */

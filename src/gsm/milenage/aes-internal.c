@@ -1,5 +1,5 @@
-/*
- * AES (Rijndael) cipher
+/*! \file aes-internal.c
+ * AES (Rijndael) cipher.
  *
  * Modifications to public domain implementation:
  * - support only 128-bit keys
@@ -8,7 +8,8 @@
  * - added option (AES_SMALL_TABLES) for reducing code size by about 8 kB at
  *   cost of reduced throughput (quite small difference on Pentium 4,
  *   10-25% when using -O1 or -O2 optimization)
- *
+ */
+/*
  * Copyright (c) 2003-2005, Jouni Malinen <j@w1.fi>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -17,6 +18,8 @@
  *
  * Alternatively, this software may be distributed under the terms of BSD
  * license.
+ *
+ * SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
  *
  * See README and COPYING for more details.
  */

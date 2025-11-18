@@ -1,10 +1,13 @@
-/* GSM Mobile Radio Interface Layer 3 messages
- * 3GPP TS 04.08 version 7.21.0 Release 1998 / ETSI TS 100 940 V7.21.0 */
-
-/* (C) 2008 by Harald Welte <laforge@gnumonks.org>
+/*! \file gsm48_ie.c
+ * GSM Mobile Radio Interface Layer 3 messages.
+ * 3GPP TS 04.08 version 7.21.0 Release 1998 / ETSI TS 100 940 V7.21.0. */
+/*
+ * (C) 2008 by Harald Welte <laforge@gnumonks.org>
  * (C) 2009-2010 by Andreas Eversberg
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,10 +18,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -31,41 +30,100 @@
 #include <osmocom/core/msgb.h>
 #include <osmocom/gsm/tlv.h>
 #include <osmocom/gsm/mncc.h>
+#include <osmocom/core/bitvec.h>
 #include <osmocom/gsm/protocol/gsm_04_08.h>
 #include <osmocom/gsm/gsm48_ie.h>
+
+/*! \addtogroup gsm0408
+ *  @{
+ */
 
 static const char bcd_num_digits[] = {
 	'0', '1', '2', '3', '4', '5', '6', '7',
 	'8', '9', '*', '#', 'a', 'b', 'c', '\0'
 };
 
-/* decode a 'called/calling/connect party BCD number' as in 10.5.4.7 */
+/*! Like gsm48_decode_bcd_number2() but with less airtight bounds checking.
+ *  \param[out] output Caller-provided output buffer
+ *  \param[in] output_len sizeof(output)
+ *  \param[in] bcd_lv Length-Value portion of to-be-decoded IE
+ *  \param[in] h_len Length of an optional heder between L and V portion
+ *  \returns 0 in case of success; negative on error */
 int gsm48_decode_bcd_number(char *output, int output_len,
 			    const uint8_t *bcd_lv, int h_len)
 {
 	uint8_t in_len = bcd_lv[0];
+	/* Just assume the input buffer is big enough for the length byte and the following data, so pass in_len + 1 for
+	 * the input buffer size. */
+	return gsm48_decode_bcd_number2(output, output_len, bcd_lv, in_len + 1, h_len);
+}
+
+/*! Decode a 'called/calling/connect party BCD number' as in 10.5.4.7.
+ * \param[out] output  Caller-provided output buffer.
+ * \param[in] output_len  sizeof(output).
+ * \param[in] bcd_lv  Length-Value part of to-be-decoded IE.
+ * \param[in] input_len  Size of the bcd_lv buffer for bounds checking.
+ * \param[in] h_len  Length of an optional header between L and V parts.
+ * \return 0 in case of success, negative on error.
+ *
+ * Errors checked:
+ *   - no or too little input data (-EIO),
+ *   - IE length exceeds input data size (-EINVAL),
+ *   - no or too little output buffer size (-ENOSPC),
+ *   - decoded number exceeds size of the output buffer (-ENOSPC).
+ *
+ * The output is guaranteed to be nul terminated iff output_len > 0.
+ */
+int gsm48_decode_bcd_number2(char *output, size_t output_len,
+			     const uint8_t *bcd_lv, size_t input_len,
+			     size_t h_len)
+{
+	uint8_t in_len;
 	int i;
+	bool truncated = false;
+	if (output_len < 1)
+		return -ENOSPC;
+	*output = '\0';
+	if (input_len < 1)
+		return -EIO;
+	in_len = bcd_lv[0];
+	/* len + 1: the BCD length plus the length byte itself must fit in the input buffer. */
+	if (input_len < in_len + 1)
+		return -EINVAL;
 
 	for (i = 1 + h_len; i <= in_len; i++) {
 		/* lower nibble */
-		output_len--;
-		if (output_len <= 1)
+		if (output_len <= 1) {
+			truncated = true;
 			break;
+		}
 		*output++ = bcd_num_digits[bcd_lv[i] & 0xf];
+		output_len--;
 
 		/* higher nibble */
-		output_len--;
-		if (output_len <= 1)
+		if (output_len <= 1) {
+			/* not truncated if there is exactly one 0xf ('\0') higher nibble remaining */
+			if (i == in_len && (bcd_lv[i] & 0xf0) == 0xf0) {
+				break;
+			}
+
+			truncated = true;
 			break;
+		}
 		*output++ = bcd_num_digits[bcd_lv[i] >> 4];
+		output_len--;
 	}
 	if (output_len >= 1)
 		*output++ = '\0';
 
+	/* Indicate whether the output was truncated */
+	if (truncated)
+		return -ENOSPC;
+
 	return 0;
 }
 
-/* convert a single ASCII character to call-control BCD */
+/*! convert a single ASCII character to call-control BCD */
 static int asc_to_bcd(const char asc)
 {
 	int i;
@@ -77,7 +135,18 @@ static int asc_to_bcd(const char asc)
 	return -EINVAL;
 }
 
-/* convert a ASCII phone number to 'called/calling/connect party BCD number' */
+/*! convert a ASCII phone number to 'called/calling/connect party BCD number'
+ *  \param[out] bcd_lv Caller-provided output buffer
+ *  \param[in] max_len Maximum Length of \a bcd_lv
+ *  \param[in] h_len Length of an optional heder between L and V portion
+ *  \param[in] input phone number as 0-terminated ASCII
+ *  \returns number of bytes used in \a bcd_lv; negative on error
+ *
+ * Depending on a context (e.g. called or calling party BCD number), the
+ * optional header between L and V parts can contain TON (Type Of Number),
+ * NPI (Numbering Plan Indication), presentation or screening indicator.
+ * NOTE: it is up to the caller to initialize this header!
+ */
 int gsm48_encode_bcd_number(uint8_t *bcd_lv, uint8_t max_len,
 		      int h_len, const char *input)
 {
@@ -110,7 +179,10 @@ int gsm48_encode_bcd_number(uint8_t *bcd_lv, uint8_t max_len,
 	return (bcd_cur - bcd_lv);
 }
 
-/* TS 04.08 10.5.4.5: decode 'bearer capability' */
+/*! Decode TS 04.08 Bearer Capability IE (10.5.4.5)
+ *  \param[out] bcap Caller-provided memory for decoded output
+ *  \param[in] lv LV portion of TS 04.08 Bearer Capability
+ *  \returns 0 on success; negative on error */
 int gsm48_decode_bearer_cap(struct gsm_mncc_bearer_cap *bcap,
 			     const uint8_t *lv)
 {
@@ -132,7 +204,24 @@ int gsm48_decode_bearer_cap(struct gsm_mncc_bearer_cap *bcap,
 	case GSM_MNCC_BCAP_SPEECH:
 		i = 1;
 		s = 0;
-		while(!(lv[i] & 0x80)) {
+		if ((lv[1] & 0x80) != 0) { /* octet 3a is absent */
+			switch (bcap->radio) {
+			case GSM48_BCAP_RRQ_FR_ONLY:
+				bcap->speech_ver[s++] = GSM48_BCAP_SV_FR;
+				break;
+			case GSM48_BCAP_RRQ_DUAL_HR:
+				bcap->speech_ver[s++] = GSM48_BCAP_SV_HR;
+				bcap->speech_ver[s++] = GSM48_BCAP_SV_FR;
+				break;
+			case GSM48_BCAP_RRQ_DUAL_FR:
+				bcap->speech_ver[s++] = GSM48_BCAP_SV_FR;
+				bcap->speech_ver[s++] = GSM48_BCAP_SV_HR;
+				break;
+			}
+			bcap->speech_ver[s] = -1; /* end of list */
+			return 0;
+		}
+		while (!(lv[i] & 0x80)) {
 			i++; /* octet 3a etc */
 			if (in_len < i)
 				return 0;
@@ -145,9 +234,10 @@ int gsm48_decode_bearer_cap(struct gsm_mncc_bearer_cap *bcap,
 		}
 		break;
 	case GSM_MNCC_BCAP_UNR_DIG:
+	case GSM_MNCC_BCAP_AUDIO:
 	case GSM_MNCC_BCAP_FAX_G3:
 		i = 1;
-		while(!(lv[i] & 0x80)) {
+		while (!(lv[i] & 0x80)) {
 			i++; /* octet 3a etc */
 			if (in_len < i)
 				return 0;
@@ -161,7 +251,7 @@ int gsm48_decode_bearer_cap(struct gsm_mncc_bearer_cap *bcap,
 			return 0;
 		bcap->data.rate_adaption = (lv[i] >> 3) & 3;
 		bcap->data.sig_access = lv[i] & 7;
-		while(!(lv[i] & 0x80)) {
+		while (!(lv[i] & 0x80)) {
 			i++; /* octet 5a etc */
 			if (in_len < i)
 				return 0;
@@ -219,7 +309,11 @@ int gsm48_decode_bearer_cap(struct gsm_mncc_bearer_cap *bcap,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.5: encode 'bearer capability' */
+/*! Encode TS 04.08 Bearer Capability IE (10.5.4.5)
+ *  \param[out] msg Message Buffer to which IE is to be appended
+ *  \param[in] lv_only Write only LV portion (1) or TLV (0)
+ *  \param[in] bcap Decoded Bearer Capability to be encoded
+ *  \returns 0 on success; negative on error */
 int gsm48_encode_bearer_cap(struct msgb *msg, int lv_only,
 			     const struct gsm_mncc_bearer_cap *bcap)
 {
@@ -242,10 +336,26 @@ int gsm48_encode_bearer_cap(struct msgb *msg, int lv_only,
 		lv[i] |= 0x80; /* last IE of octet 3 etc */
 		break;
 	case GSM48_BCAP_ITCAP_UNR_DIG_INF:
+	case GSM48_BCAP_ITCAP_3k1_AUDIO:
 	case GSM48_BCAP_ITCAP_FAX_G3:
 		lv[i++] |= 0x80; /* last IE of octet 3 etc */
-		/* octet 4 */
-		lv[i++] = 0xb8;
+		/* octet 4
+		 * 1... .... = Extension: No Extension
+		 * .0.. .... = Compression: Not Allowed
+		 * ..xx .... = Structure: (see below)
+		 * .... 1... = Duplex mode: Full
+		 * .... .0.. = Configuration: Point-to-point
+		 * .... ..0. = NIRR: No meaning is associated with this value
+		 * .... ...0 = Establishment: Demand
+		 *
+		 * For connection element "non transparent":
+		 * ..00 .... = Structure: Service data unit integrity (0)
+		 * For connection element "transparent":
+		 * ..11 .... = Structure: Unstructured (3) */
+		if ((bcap->data.transp & 0x01) == 0)
+			lv[i++] = 0x88 | (0x03 << 4);
+		else
+			lv[i++] = 0x88;
 		/* octet 5 */
 		lv[i++] = 0x80 | ((bcap->data.rate_adaption & 3) << 3)
 			  | (bcap->data.sig_access & 7);
@@ -259,7 +369,9 @@ int gsm48_encode_bearer_cap(struct msgb *msg, int lv_only,
 		lv[i++] = (bcap->data.parity & 7) |
 			  ((bcap->data.interm_rate & 3) << 5);
 		/* octet 6c */
-		lv[i] = 0x80 | (bcap->data.modem_type & 0x1f);
+		lv[i] = 0x80 |
+			((bcap->data.transp & 3) << 5) |
+			(bcap->data.modem_type & 0x1f);
 		break;
 	default:
 		return -EINVAL;
@@ -274,7 +386,10 @@ int gsm48_encode_bearer_cap(struct msgb *msg, int lv_only,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.5a: decode 'call control cap' */
+/*! Decode TS 04.08 Call Control Capabilities IE (10.5.4.5a)
+ *  \param[out] ccap Caller-provided memory for decoded CC capabilities
+ *  \param[in] lv Length-Value of IE
+ *  \returns 0 on success; negative on error */
 int gsm48_decode_cccap(struct gsm_mncc_cccap *ccap, const uint8_t *lv)
 {
 	uint8_t in_len = lv[0];
@@ -289,7 +404,10 @@ int gsm48_decode_cccap(struct gsm_mncc_cccap *ccap, const uint8_t *lv)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.5a: encode 'call control cap' */
+/*! Encodoe TS 04.08 Call Control Capabilities (10.5.4.5a)
+ *  \param[out] msg Message Buffer to which to append IE (as TLV)
+ *  \param[in] ccap Decoded CC Capabilities to be encoded
+ *  \returns 0 on success; negative on error */
 int gsm48_encode_cccap(struct msgb *msg,
 			const struct gsm_mncc_cccap *ccap)
 {
@@ -307,7 +425,10 @@ int gsm48_encode_cccap(struct msgb *msg,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.7: decode 'called party BCD number' */
+/*! Decode TS 04.08 Called Party BCD Number IE (10.5.4.7)
+ *  \param[out] called Caller-provided memory for decoded number
+ *  \param[in] lv Length-Value portion of IE
+ *  \returns 0 on success; negative on error */
 int gsm48_decode_called(struct gsm_mncc_number *called,
 			 const uint8_t *lv)
 {
@@ -326,7 +447,10 @@ int gsm48_decode_called(struct gsm_mncc_number *called,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.7: encode 'called party BCD number' */
+/*! Encode TS 04.08 Called Party IE (10.5.4.7)
+ *  \param[out] msg Mesage Buffer to which to append IE (as TLV)
+ *  \param[in] called MNCC Number to encode/append
+ *  \returns 0 on success; negative on error */
 int gsm48_encode_called(struct msgb *msg,
 			 const struct gsm_mncc_number *called)
 {
@@ -348,7 +472,10 @@ int gsm48_encode_called(struct msgb *msg,
 	return 0;
 }
 
-/* decode callerid of various IEs */
+/*! Decode TS 04.08 Caller ID
+ *  \param[out] callerid Caller-provided memory for decoded number
+ *  \param[in] lv Length-Value portion of IE
+ *  \returns 0 on success; negative on error */
 int gsm48_decode_callerid(struct gsm_mncc_number *callerid,
 			 const uint8_t *lv)
 {
@@ -375,7 +502,12 @@ int gsm48_decode_callerid(struct gsm_mncc_number *callerid,
 	return 0;
 }
 
-/* encode callerid of various IEs */
+/*! Encode TS 04.08 Caller ID IE
+ *  \param[out] msg Mesage Buffer to which to append IE (as TLV)
+ *  \param[in] ie IE Identifier (tag)
+ *  \param[in] max_len maximum generated output in bytes
+ *  \param[in] callerid MNCC Number to encode/append
+ *  \returns 0 on success; negative on error */
 int gsm48_encode_callerid(struct msgb *msg, int ie, int max_len,
 			   const struct gsm_mncc_number *callerid)
 {
@@ -406,7 +538,10 @@ int gsm48_encode_callerid(struct msgb *msg, int ie, int max_len,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.11: decode 'cause' */
+/*! Decode TS 04.08 Cause IE (10.5.4.11)
+ *  \param[out] cause Caller-provided memory for output
+ *  \param[in] lv LV portion of Cause IE
+ *  \returns 0 on success; negative on error */
 int gsm48_decode_cause(struct gsm_mncc_cause *cause,
 			const uint8_t *lv)
 {
@@ -449,7 +584,11 @@ int gsm48_decode_cause(struct gsm_mncc_cause *cause,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.11: encode 'cause' */
+/*! Encode TS 04.08 Cause IE (10.5.4.11)
+ *  \param[out] msg Message Buffer to which to append IE
+ *  \param[in] lv_only Encode as LV (1) or TLV (0)
+ *  \param[in] cause Cause value to be encoded
+ *  \returns 0 on success; negative on error */
 int gsm48_encode_cause(struct msgb *msg, int lv_only,
 			const struct gsm_mncc_cause *cause)
 {
@@ -489,49 +628,49 @@ int gsm48_encode_cause(struct msgb *msg, int lv_only,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.9: decode 'calling number' */
+/*! Decode TS 04.08 Calling Number IE (10.5.4.9) */
 int gsm48_decode_calling(struct gsm_mncc_number *calling,
 			 const uint8_t *lv)
 {
 	return gsm48_decode_callerid(calling, lv);
 }
 
-/* TS 04.08 10.5.4.9: encode 'calling number' */
+/*! Encode TS 04.08 Calling Number IE (10.5.4.9) */
 int gsm48_encode_calling(struct msgb *msg, 
 			  const struct gsm_mncc_number *calling)
 {
 	return gsm48_encode_callerid(msg, GSM48_IE_CALLING_BCD, 14, calling);
 }
 
-/* TS 04.08 10.5.4.13: decode 'connected number' */
+/*! Decode TS 04.08 Connected Number IE (10.5.4.13) */
 int gsm48_decode_connected(struct gsm_mncc_number *connected,
 			 const uint8_t *lv)
 {
 	return gsm48_decode_callerid(connected, lv);
 }
 
-/* TS 04.08 10.5.4.13: encode 'connected number' */
+/*! Encode TS 04.08 Connected Number IE (10.5.4.13) */
 int gsm48_encode_connected(struct msgb *msg,
 			    const struct gsm_mncc_number *connected)
 {
 	return gsm48_encode_callerid(msg, GSM48_IE_CONN_BCD, 14, connected);
 }
 
-/* TS 04.08 10.5.4.21b: decode 'redirecting number' */
+/*! Decode TS 04.08 Redirecting Number IE (10.5.4.21b) */
 int gsm48_decode_redirecting(struct gsm_mncc_number *redirecting,
 			 const uint8_t *lv)
 {
 	return gsm48_decode_callerid(redirecting, lv);
 }
 
-/* TS 04.08 10.5.4.21b: encode 'redirecting number' */
+/*! Encode TS 04.08 Redirecting Number IE (10.5.4.21b) */
 int gsm48_encode_redirecting(struct msgb *msg,
 			      const struct gsm_mncc_number *redirecting)
 {
 	return gsm48_encode_callerid(msg, GSM48_IE_REDIR_BCD, 19, redirecting);
 }
 
-/* TS 04.08 10.5.4.15: decode 'facility' */
+/*! Decode TS 04.08 Facility IE (10.5.4.15) */
 int gsm48_decode_facility(struct gsm_mncc_facility *facility,
 			   const uint8_t *lv)
 {
@@ -549,7 +688,7 @@ int gsm48_decode_facility(struct gsm_mncc_facility *facility,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.15: encode 'facility' */
+/*! Encode TS 04.08 Facility IE (10.5.4.15) */
 int gsm48_encode_facility(struct msgb *msg, int lv_only,
 			   const struct gsm_mncc_facility *facility)
 {
@@ -568,7 +707,7 @@ int gsm48_encode_facility(struct msgb *msg, int lv_only,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.20: decode 'notify' */
+/*! Decode TS 04.08 Notify IE (10.5.4.20) */
 int gsm48_decode_notify(int *notify, const uint8_t *v)
 {
 	*notify = v[0] & 0x7f;
@@ -576,7 +715,7 @@ int gsm48_decode_notify(int *notify, const uint8_t *v)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.20: encode 'notify' */
+/*! Encode TS 04.08 Notify IE (10.5.4.20) */
 int gsm48_encode_notify(struct msgb *msg, int notify)
 {
 	msgb_v_put(msg, notify | 0x80);
@@ -584,7 +723,7 @@ int gsm48_encode_notify(struct msgb *msg, int notify)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.23: decode 'signal' */
+/*! Decode TS 04.08 Signal IE (10.5.4.23) */
 int gsm48_decode_signal(int *signal, const uint8_t *v)
 {
 	*signal = v[0];
@@ -592,7 +731,7 @@ int gsm48_decode_signal(int *signal, const uint8_t *v)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.23: encode 'signal' */
+/*! Encode TS 04.08 Signal IE (10.5.4.23) */
 int gsm48_encode_signal(struct msgb *msg, int signal)
 {
 	msgb_tv_put(msg, GSM48_IE_SIGNAL, signal);
@@ -600,7 +739,7 @@ int gsm48_encode_signal(struct msgb *msg, int signal)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.17: decode 'keypad' */
+/*! Decode TS 04.08 Keypad IE (10.5.4.17) */
 int gsm48_decode_keypad(int *keypad, const uint8_t *lv)
 {
 	uint8_t in_len = lv[0];
@@ -613,7 +752,7 @@ int gsm48_decode_keypad(int *keypad, const uint8_t *lv)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.17: encode 'keypad' */
+/*! Encode TS 04.08 Keypad IE (10.5.4.17) */
 int gsm48_encode_keypad(struct msgb *msg, int keypad)
 {
 	msgb_tv_put(msg, GSM48_IE_KPD_FACILITY, keypad);
@@ -621,7 +760,7 @@ int gsm48_encode_keypad(struct msgb *msg, int keypad)
 	return 0;
 }
 
-/* TS 04.08 10.5.4.21: decode 'progress' */
+/*! Decode TS 04.08 Progress IE (10.5.4.21) */
 int gsm48_decode_progress(struct gsm_mncc_progress *progress,
 			   const uint8_t *lv)
 {
@@ -637,7 +776,7 @@ int gsm48_decode_progress(struct gsm_mncc_progress *progress,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.21: encode 'progress' */
+/*! Encode TS 04.08 Progress IE (10.5.4.21) */
 int gsm48_encode_progress(struct msgb *msg, int lv_only,
 			   const struct gsm_mncc_progress *p)
 {
@@ -654,7 +793,7 @@ int gsm48_encode_progress(struct msgb *msg, int lv_only,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.25: decode 'user-user' */
+/*! Decode TS 04.08 User-User IE (10.5.4.25) */
 int gsm48_decode_useruser(struct gsm_mncc_useruser *uu,
 			   const uint8_t *lv)
 {
@@ -680,7 +819,7 @@ int gsm48_decode_useruser(struct gsm_mncc_useruser *uu,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.25: encode 'useruser' */
+/*! Encode TS 04.08 User-User IE (10.5.4.25) */
 int gsm48_encode_useruser(struct msgb *msg, int lv_only,
 			   const struct gsm_mncc_useruser *uu)
 {
@@ -700,13 +839,13 @@ int gsm48_encode_useruser(struct msgb *msg, int lv_only,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.24: decode 'ss version' */
+/*! Decode TS 04.08 SS Version IE (10.5.4.24) */
 int gsm48_decode_ssversion(struct gsm_mncc_ssversion *ssv,
 			    const uint8_t *lv)
 {
 	uint8_t in_len = lv[0];
 
-	if (in_len < 1 || in_len < sizeof(ssv->info))
+	if (in_len < 1 || in_len > sizeof(ssv->info))
 		return -EINVAL;
 
 	memcpy(ssv->info, lv + 1, in_len);
@@ -715,7 +854,7 @@ int gsm48_decode_ssversion(struct gsm_mncc_ssversion *ssv,
 	return 0;
 }
 
-/* TS 04.08 10.5.4.24: encode 'ss version' */
+/*! Encode TS 04.08 SS Version IE (10.5.4.24) */
 int gsm48_encode_ssversion(struct msgb *msg,
 			   const struct gsm_mncc_ssversion *ssv)
 {
@@ -733,7 +872,7 @@ int gsm48_encode_ssversion(struct msgb *msg,
 
 /* decode 'more data' does not require a function, because it has no value */
 
-/* TS 04.08 10.5.4.19: encode 'more data' */
+/*! Encode TS 04.08 More Data IE (10.5.4.19) */
 int gsm48_encode_more(struct msgb *msg)
 {
 	uint8_t *ie;
@@ -756,9 +895,14 @@ static int32_t smod(int32_t n, int32_t m)
 	return res;
 }
 
-/* decode "Cell Channel Description" (10.5.2.1b) and other frequency lists */
-int gsm48_decode_freq_list(struct gsm_sysinfo_freq *f, uint8_t *cd,
-			   uint8_t len, uint8_t mask, uint8_t frqt)
+/*! Decode TS 04.08 Cell Channel Description IE (10.5.2.1b) and other frequency lists
+ *  \param[out] f Caller-provided output memory, an array of 1024 elements
+ *  \param[in] cd Cell Channel Description IE
+ *  \param[in] len Length of \a cd in bytes
+ *  \returns 0 on success; negative on error */
+int gsm48_decode_freq_list(struct gsm_sysinfo_freq *f,
+			   const uint8_t *cd, uint8_t len,
+			   uint8_t mask, uint8_t frqt)
 {
 	int i;
 
@@ -1190,3 +1334,249 @@ int gsm48_decode_freq_list(struct gsm_sysinfo_freq *f, uint8_t *cd,
 
 	return 0;
 }
+
+/*! Decode 3GPP TS 24.008 Mobile Station Classmark 3 (10.5.1.7).
+ *  \param[out] classmark3_out user provided memory to store decoded classmark3.
+ *  \param[in] classmark3 pointer to memory that contains the raw classmark bits.
+ *  \param[in] classmark3_len length in bytes of the memory where classmark3 points to.
+ *  \returns 0 on success; negative on error. */
+int gsm48_decode_classmark3(struct gsm48_classmark3 *classmark3_out,
+			    const uint8_t *classmark3, size_t classmark3_len)
+{
+	struct bitvec bv;
+	uint8_t data[255];
+	struct gsm48_classmark3 *cm3 = classmark3_out;
+
+	/* if cm3 gets extended by spec, it will be truncated, but 255 bytes
+	 * should be more than enough. */
+	if (classmark3_len > sizeof(data))
+		classmark3_len = sizeof(data);
+
+	memset(&bv, 0, sizeof(bv));
+	memset(data, 0, sizeof(data));
+	memset(classmark3_out, 0, sizeof(*classmark3_out));
+
+	memcpy(data, classmark3, classmark3_len);
+	bv.data = (uint8_t*) data;
+	bv.data_len = sizeof(data);
+
+	/* Parse bit vector, see also: 3GPP TS 24.008, section 10.5.1.7 */
+	bitvec_get_uint(&bv, 1);
+	cm3->mult_band_supp = bitvec_get_uint(&bv, 3);
+	switch (cm3->mult_band_supp) {
+	case 0x00:
+		cm3->a5_bits = bitvec_get_uint(&bv, 4);
+		break;
+	case 0x05:
+	case 0x06:
+		cm3->a5_bits = bitvec_get_uint(&bv, 4);
+		cm3->assoc_radio_cap_2 = bitvec_get_uint(&bv, 4);
+		cm3->assoc_radio_cap_1 = bitvec_get_uint(&bv, 4);
+		break;
+	case 0x01:
+	case 0x02:
+	case 0x04:
+		cm3->a5_bits = bitvec_get_uint(&bv, 4);
+		bitvec_get_uint(&bv, 4);
+		cm3->assoc_radio_cap_1 = bitvec_get_uint(&bv, 4);
+		break;
+	default:
+		return -1;
+	}
+
+	cm3->r_support.present = bitvec_get_uint(&bv, 1);
+	if (cm3->r_support.present)
+		cm3->r_support.r_gsm_assoc_radio_cap = bitvec_get_uint(&bv, 3);
+
+	cm3->hscsd_mult_slot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->hscsd_mult_slot_cap.present)
+		cm3->hscsd_mult_slot_cap.mslot_class = bitvec_get_uint(&bv, 5);
+
+	cm3->ucs2_treatment = bitvec_get_uint(&bv, 1);
+	cm3->extended_meas_cap = bitvec_get_uint(&bv, 1);
+
+	cm3->ms_meas_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->ms_meas_cap.present) {
+		cm3->ms_meas_cap.sms_value = bitvec_get_uint(&bv, 4);
+		cm3->ms_meas_cap.sm_value = bitvec_get_uint(&bv, 4);
+	}
+
+	cm3->ms_pos_method_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->ms_pos_method_cap.present)
+		cm3->ms_pos_method_cap.method = bitvec_get_uint(&bv, 5);
+
+	cm3->ecsd_multislot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->ecsd_multislot_cap.present)
+		cm3->ecsd_multislot_cap.mslot_class = bitvec_get_uint(&bv, 5);
+
+	cm3->psk8_struct.present = bitvec_get_uint(&bv, 1);
+	if (cm3->psk8_struct.present) {
+		cm3->psk8_struct.mod_cap = bitvec_get_uint(&bv, 1);
+
+		cm3->psk8_struct.rf_pwr_cap_1.present = bitvec_get_uint(&bv, 1);
+		if (cm3->psk8_struct.rf_pwr_cap_1.present) {
+			cm3->psk8_struct.rf_pwr_cap_1.value =
+			    bitvec_get_uint(&bv, 2);
+		}
+
+		cm3->psk8_struct.rf_pwr_cap_2.present = bitvec_get_uint(&bv, 1);
+		if (cm3->psk8_struct.rf_pwr_cap_2.present) {
+			cm3->psk8_struct.rf_pwr_cap_2.value =
+			    bitvec_get_uint(&bv, 2);
+		}
+	}
+
+	cm3->gsm_400_bands_supp.present = bitvec_get_uint(&bv, 1);
+	if (cm3->gsm_400_bands_supp.present) {
+		cm3->gsm_400_bands_supp.value = bitvec_get_uint(&bv, 2);
+		if (cm3->gsm_400_bands_supp.value == 0x00)
+			return -1;
+		cm3->gsm_400_bands_supp.assoc_radio_cap =
+		    bitvec_get_uint(&bv, 4);
+	}
+
+	cm3->gsm_850_assoc_radio_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->gsm_850_assoc_radio_cap.present)
+		cm3->gsm_850_assoc_radio_cap.value = bitvec_get_uint(&bv, 4);
+
+	cm3->gsm_1900_assoc_radio_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->gsm_1900_assoc_radio_cap.present)
+		cm3->gsm_1900_assoc_radio_cap.value = bitvec_get_uint(&bv, 4);
+
+	cm3->umts_fdd_rat_cap = bitvec_get_uint(&bv, 1);
+	cm3->umts_tdd_rat_cap = bitvec_get_uint(&bv, 1);
+	cm3->cdma200_rat_cap = bitvec_get_uint(&bv, 1);
+
+	cm3->dtm_gprs_multislot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->dtm_gprs_multislot_cap.present) {
+		cm3->dtm_gprs_multislot_cap.mslot_class = bitvec_get_uint(&bv, 2);
+		cm3->dtm_gprs_multislot_cap.single_slot_dtm =
+		    bitvec_get_uint(&bv, 1);
+		cm3->dtm_gprs_multislot_cap.dtm_egprs_multislot_cap.present =
+		    bitvec_get_uint(&bv, 1);
+		if (cm3->dtm_gprs_multislot_cap.dtm_egprs_multislot_cap.present)
+			cm3->dtm_gprs_multislot_cap.dtm_egprs_multislot_cap.
+			    mslot_class = bitvec_get_uint(&bv, 2);
+	}
+
+	/* Release 4 starts here. */
+	cm3->single_band_supp.present = bitvec_get_uint(&bv, 1);
+	if (cm3->single_band_supp.present)
+		cm3->single_band_supp.value = bitvec_get_uint(&bv, 4);
+
+	cm3->gsm_750_assoc_radio_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->gsm_750_assoc_radio_cap.present)
+		cm3->gsm_750_assoc_radio_cap.value = bitvec_get_uint(&bv, 4);
+
+	cm3->umts_1_28_mcps_tdd_rat_cap = bitvec_get_uint(&bv, 1);
+	cm3->geran_feature_package = bitvec_get_uint(&bv, 1);
+
+	cm3->extended_dtm_gprs_multislot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->extended_dtm_gprs_multislot_cap.present) {
+		cm3->extended_dtm_gprs_multislot_cap.mslot_class =
+		    bitvec_get_uint(&bv, 2);
+		cm3->extended_dtm_gprs_multislot_cap.
+		    extended_dtm_egprs_multislot_cap.present =
+		    bitvec_get_uint(&bv, 1);
+		if (cm3->extended_dtm_gprs_multislot_cap.
+		    extended_dtm_egprs_multislot_cap.present)
+			cm3->extended_dtm_gprs_multislot_cap.
+			    extended_dtm_egprs_multislot_cap.mslot_class =
+			    bitvec_get_uint(&bv, 2);
+	}
+
+	/* Release 5 starts here */
+	cm3->high_multislot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->high_multislot_cap.present)
+		cm3->high_multislot_cap.value = bitvec_get_uint(&bv, 2);
+
+	/* This used to be the GERAN Iu mode support bit, but the newer spec
+	 * releases say that it should not be used (always zero), however
+	 * we will just ignore tha state of this bit. */
+	bitvec_get_uint(&bv, 1);
+
+	cm3->geran_feature_package_2 = bitvec_get_uint(&bv, 1);
+	cm3->gmsk_multislot_power_prof = bitvec_get_uint(&bv, 2);
+	cm3->psk8_multislot_power_prof = bitvec_get_uint(&bv, 2);
+
+	/* Release 6 starts here */
+	cm3->t_gsm_400_bands_supp.present = bitvec_get_uint(&bv, 1);
+	if (cm3->t_gsm_400_bands_supp.present) {
+		cm3->t_gsm_400_bands_supp.value = bitvec_get_uint(&bv, 2);
+		cm3->t_gsm_400_bands_supp.assoc_radio_cap =
+		    bitvec_get_uint(&bv, 4);
+	}
+
+	/* This used to be T-GSM 900 associated radio capability, but the
+	 * newer spec releases say that this bit should not be used, but if
+	 * it is used by some MS anyway we must assume that there is data
+	 * we have to override. */
+	if (bitvec_get_uint(&bv, 1))
+		bitvec_get_uint(&bv, 4);
+
+	cm3->dl_advanced_rx_perf = bitvec_get_uint(&bv, 2);
+	cm3->dtm_enhancements_cap = bitvec_get_uint(&bv, 1);
+
+	cm3->dtm_gprs_high_multislot_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->dtm_gprs_high_multislot_cap.present) {
+		cm3->dtm_gprs_high_multislot_cap.mslot_class =
+		    bitvec_get_uint(&bv, 3);
+		cm3->dtm_gprs_high_multislot_cap.offset_required =
+		    bitvec_get_uint(&bv, 1);
+		cm3->dtm_gprs_high_multislot_cap.dtm_egprs_high_multislot_cap.
+		    present = bitvec_get_uint(&bv, 1);
+		if (cm3->dtm_gprs_high_multislot_cap.
+		    dtm_egprs_high_multislot_cap.present)
+			cm3->dtm_gprs_high_multislot_cap.
+			    dtm_egprs_high_multislot_cap.mslot_class =
+			    bitvec_get_uint(&bv, 3);
+	}
+
+	cm3->repeated_acch_capability = bitvec_get_uint(&bv, 1);
+
+	/* Release 7 starts here */
+	cm3->gsm_710_assoc_radio_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->gsm_710_assoc_radio_cap.present)
+		cm3->gsm_710_assoc_radio_cap.value = bitvec_get_uint(&bv, 4);
+
+	cm3->t_gsm_810_assoc_radio_cap.present = bitvec_get_uint(&bv, 1);
+	if (cm3->t_gsm_810_assoc_radio_cap.present)
+		cm3->t_gsm_810_assoc_radio_cap.value = bitvec_get_uint(&bv, 4);
+
+	cm3->ciphering_mode_setting_cap = bitvec_get_uint(&bv, 1);
+	cm3->add_pos_cap = bitvec_get_uint(&bv, 1);
+
+	/* Release 8 starts here */
+	cm3->e_utra_fdd_supp = bitvec_get_uint(&bv, 1);
+	cm3->e_utra_tdd_supp = bitvec_get_uint(&bv, 1);
+	cm3->e_utra_meas_rep_supp = bitvec_get_uint(&bv, 1);
+	cm3->prio_resel_supp = bitvec_get_uint(&bv, 1);
+
+	/* Release 9 starts here */
+	cm3->utra_csg_cells_rep = bitvec_get_uint(&bv, 1);
+
+	cm3->vamos_level = bitvec_get_uint(&bv, 2);
+
+	/* Release 10 starts here */
+	cm3->tighter_capability = bitvec_get_uint(&bv, 2);
+	cm3->sel_ciph_dl_sacch = bitvec_get_uint(&bv, 1);
+
+	/* Release 11 starts here */
+	cm3->cs_ps_srvcc_geran_utra = bitvec_get_uint(&bv, 2);
+	cm3->cs_ps_srvcc_geran_eutra = bitvec_get_uint(&bv, 2);
+
+	cm3->geran_net_sharing = bitvec_get_uint(&bv, 1);
+	cm3->e_utra_wb_rsrq_meas_supp = bitvec_get_uint(&bv, 1);
+
+	/* Release 12 starts here */
+	cm3->er_band_support = bitvec_get_uint(&bv, 1);
+	cm3->utra_mult_band_ind_supp = bitvec_get_uint(&bv, 1);
+	cm3->e_utra_mult_band_ind_supp = bitvec_get_uint(&bv, 1);
+	cm3->extended_tsc_set_cap_supp = bitvec_get_uint(&bv, 1);
+
+	/* Late addition of a release 11 feature */
+	cm3->extended_earfcn_val_range = bitvec_get_uint(&bv, 1);
+
+	return 0;
+}
+/*! @} */

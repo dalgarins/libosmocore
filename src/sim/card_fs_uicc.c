@@ -1,8 +1,11 @@
-/* ETSI UICC specific structures / routines */
+/*! \file card_fs_uicc.c
+ * ETSI UICC specific structures / routines. */
 /*
- * (C) 2012 by Harald Welte <laforge@gnumonks.org>
+ * (C) 2012-2020 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,15 +17,15 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 
 #include <osmocom/sim/sim.h>
+#include <osmocom/core/talloc.h>
 #include <osmocom/gsm/tlv.h>
+
+#include "sim_int.h"
+#include "gsm_int.h"
 
 /* TS 102 221 V10.0.0 / 10.2.1 */
 const struct osim_card_sw ts102221_uicc_sw[] = {
@@ -168,6 +171,23 @@ const struct osim_card_sw ts102221_uicc_sw[] = {
 	OSIM_CARD_SW_LAST
 };
 
+static const struct osim_card_sw *uicc_card_sws[] = {
+	ts102221_uicc_sw,
+	NULL
+};
+
+/* TS 102 221 Chapter 13.1 */
+static const struct osim_file_desc uicc_ef_in_mf[] = {
+	EF_LIN_FIX_N(0x2f00, SFI_NONE, "EF.DIR", 0, 1, 32,
+			"Application directory"),
+	EF_TRANSP_N(0x2FE2, SFI_NONE, "EF.ICCID", 0, 10, 10,
+			"ICC Identification"),
+	EF_TRANSP_N(0x2F05, SFI_NONE, "EF.PL", 0, 2, 20,
+			"Preferred Languages"),
+	EF_LIN_FIX_N(0x2F06, SFI_NONE, "EF.ARR", F_OPTIONAL, 1, 256,
+			"Access Rule Reference"),
+};
+
 const struct value_string ts102221_fcp_vals[14] = {
 	{ UICC_FCP_T_FCP,		"File control parameters" },
 	{ UICC_FCP_T_FILE_SIZE,		"File size" },
@@ -205,4 +225,40 @@ const struct tlv_definition ts102221_fcp_tlv_def = {
 };
 
 /* Annex E - TS 101 220 */
-static const uint8_t adf_uicc_aid[] = { 0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x01 };
+static const uint8_t __attribute__((__unused__)) adf_uicc_aid[] = { 0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x01 };
+
+struct osim_card_profile *osim_cprof_uicc(void *ctx, bool have_df_gsm)
+{
+	struct osim_card_profile *cprof;
+	struct osim_file_desc *mf;
+	int rc;
+
+	cprof = talloc_zero(ctx, struct osim_card_profile);
+	cprof->name = "3GPP UICC";
+	cprof->sws = uicc_card_sws; // FIXME: extend later
+
+	mf = alloc_df(cprof, 0x3f00, "MF");
+
+	cprof->mf = mf;
+
+	/* Core UICC Files */
+	add_filedesc(mf, uicc_ef_in_mf, ARRAY_SIZE(uicc_ef_in_mf));
+
+	/* DF.TELECOM hierarchy as sub-directory of MF */
+	rc = osim_int_cprof_add_telecom(mf);
+	if (rc != 0) {
+		talloc_free(cprof);
+		return NULL;
+	}
+
+	if (have_df_gsm) {
+		/* DF.GSM as sub-directory of MF */
+		rc = osim_int_cprof_add_gsm(mf);
+		if (rc != 0) {
+			talloc_free(cprof);
+			return NULL;
+		}
+	}
+
+	return cprof;
+}

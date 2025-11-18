@@ -3,24 +3,35 @@
 #pragma once
 
 #include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <osmocom/core/linuxlist.h>
+#include <osmocom/core/utils.h>
+#include <osmocom/core/endian.h>
 
 /*
  * this is from GSM 03.03 CGI but is copied in GSM 08.08
- * in § 3.2.2.27 for Cell Identifier List
+ * in § 3.2.2.27 for Cell Identifier List.
+ * See gsm0808_cell_id_discr_name() for a human readable representation.
  */
 enum CELL_IDENT {
 	CELL_IDENT_WHOLE_GLOBAL		= 0,
 	CELL_IDENT_LAC_AND_CI		= 1,
 	CELL_IDENT_CI			= 2,
 	CELL_IDENT_NO_CELL		= 3,
-	CELL_IDENT_LAI_AND_LAC		= 4,
+	CELL_IDENT_LAI			= 4,
 	CELL_IDENT_LAC			= 5,
 	CELL_IDENT_BSS			= 6,
 	CELL_IDENT_UTRAN_PLMN_LAC_RNC	= 8,
 	CELL_IDENT_UTRAN_RNC		= 9,
 	CELL_IDENT_UTRAN_LAC_RNC	= 10,
-};
+	CELL_IDENT_SAI	= 11,
 
+	/* Not in 03.03 nor 08.08. Place them > 0x0f (discr_id is 4 bits) */
+	CELL_IDENT_WHOLE_GLOBAL_PS	= 128, /* CGI + RAC, TS 48.018 8c.1.4.1.1 */
+};
+/* Keep this misnamed CELL_IDENT for API backwards compatibility (see OS#3124). */
+#define CELL_IDENT_LAI_AND_LAC CELL_IDENT_LAI
 
 /* GSM 08.06 § 6.3 */
 enum BSSAP_MSG_TYPE {
@@ -35,18 +46,38 @@ struct bssmap_header {
 
 struct dtap_header {
 	uint8_t type;
-	uint8_t link_id;
+	union {
+		uint8_t link_id;  /* Backward compatibility */
+		struct {
+#if OSMO_IS_LITTLE_ENDIAN
+			uint8_t dlci_sapi:3, /* enum gsm0406_dlci_sapi */
+			dlci_spare:3,
+			dlci_cc:2;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+			uint8_t dlci_cc:2, dlci_spare:3, dlci_sapi:3;
+#endif
+		};
+	};
 	uint8_t length;
 } __attribute__((packed));
 
+/* Data Link Control SAPI, GSM 08.06 § 6.3.2, GSM 04.06 § 3.3.3 */
+enum gsm0406_dlci_sapi {
+	DLCI_SAPI_RR_MM_CC	= 0x0,
+	DLCI_SAPI_SMS		= 0x3,
+};
+extern const struct value_string gsm0406_dlci_sapi_names[];
+static inline const char *gsm0406_dlci_sapi_name(enum gsm0406_dlci_sapi val)
+{ return get_value_string(gsm0406_dlci_sapi_names, val); }
 
 enum BSS_MAP_MSG_TYPE {
 	BSS_MAP_MSG_RESERVED_0		= 0,
 
 	/* ASSIGNMENT MESSAGES */
-	BSS_MAP_MSG_ASSIGMENT_RQST	= 1,
-	BSS_MAP_MSG_ASSIGMENT_COMPLETE	= 2,
-	BSS_MAP_MSG_ASSIGMENT_FAILURE	= 3,
+	BSS_MAP_MSG_ASSIGNMENT_RQST	= 1,
+	BSS_MAP_MSG_ASSIGNMENT_COMPLETE	= 2,
+	BSS_MAP_MSG_ASSIGNMENT_FAILURE	= 3,
 	BSS_MAP_MSG_CHAN_MOD_RQST	= 8,
 
 	/*  HANDOVER MESSAGES */
@@ -137,12 +168,15 @@ enum BSS_MAP_MSG_TYPE {
 	BSS_MAP_MSG_VGCS_VBS_QUEUING_INDICATION	= 30,
 	BSS_MAP_MSG_UPLINK_RQST		= 31,
 	BSS_MAP_MSG_UPLINK_RQST_ACKNOWLEDGE	= 39,
+	BSS_MAP_MSG_VGCS_VBS_ASSIGNMENT_STATUS	= 59,
+	BSS_MAP_MSG_VGCS_VBS_AREA_CELL_INFO	= 60,
 	BSS_MAP_MSG_UPLINK_RQST_CONFIRMATION	= 73,
 	BSS_MAP_MSG_UPLINK_RELEASE_INDICATION	= 74,
 	BSS_MAP_MSG_UPLINK_REJECT_CMD	= 75,
 	BSS_MAP_MSG_UPLINK_RELEASE_CMD	= 76,
 	BSS_MAP_MSG_UPLINK_SEIZED_CMD	= 77,
 	BSS_MAP_MSG_VGCS_ADDL_INFO		= 0x60,
+	BSS_MAP_MSG_VGCS_SMS			= 0x61,
 	BSS_MAP_MSG_NOTIFICATION_DATA		= 0x62,
 	BSS_MAP_MSG_UPLINK_APP_DATA		= 0x63,
 
@@ -151,6 +185,10 @@ enum BSS_MAP_MSG_TYPE {
 	BSS_MAP_MSG_LCLS_CONNECT_CTRL_ACK	= 0x75,
 	BSS_MAP_MSG_LCLS_NOTIFICATION		= 0x76,
 };
+
+#define BSS_MAP_MSG_ASSIGMENT_RQST BSS_MAP_MSG_ASSIGNMENT_RQST
+#define BSS_MAP_MSG_ASSIGMENT_COMPLETE BSS_MAP_MSG_ASSIGNMENT_COMPLETE
+#define BSS_MAP_MSG_ASSIGMENT_FAILURE BSS_MAP_MSG_ASSIGNMENT_FAILURE
 
 enum GSM0808_IE_CODING {
 	GSM0808_IE_CIRCUIT_IDENTITY_CODE	= 1,
@@ -231,7 +269,7 @@ enum GSM0808_IE_CODING {
 	GSM0808_IE_SEGMENTATION			= 79,
 	GSM0808_IE_SERVICE_HANDOVER		= 80,
 	GSM0808_IE_SOURCE_RNC_TO_TARGET_RNC_TRANSPARENT_UMTS	= 81,
-	GSM0808_IE_SOURCE_RNC_TO_TARGET_RNC_TRANSPARENT_CDMA2000= 82,
+	GSM0808_IE_SOURCE_RNC_TO_TARGET_RNC_TRANSPARENT_CDMA2000 = 82,
 	GSM0808_IE_RESERVED_5			= 65,
 	GSM0808_IE_RESERVED_6			= 66,
 	GSM0808_IE_GERAN_CLASSMARK		= 0x53,
@@ -288,9 +326,44 @@ enum GSM0808_IE_CODING {
 	GSM0808_IE_CN_TO_MS_TRANSP_INFO		= 0x93,
 	GSM0808_IE_SELECTED_PLMN_ID		= 0x94,
 	GSM0808_IE_LAST_USED_EUTRAN_PLMN_ID	= 0x95,
+	GSM0808_IE_OLD_LAI			= 0x96,
+	GSM0808_IE_ATTACH_INDICATOR		= 0x97,
+	GSM0808_IE_SELECTED_OPERATOR		= 0x98,
+	GSM0808_IE_PS_REGISTERED_OPERATOR	= 0x99,
+	GSM0808_IE_CS_REGISTERED_OPERATOR	= 0x9a,
+
+	/* Osmocom and Themyscira extensions: */
+	GSM0808_IE_OSMO_OSMUX_SUPPORT		= 0xf0,
+	GSM0808_IE_OSMO_OSMUX_CID		= 0xf1,
+	GSM0808_IE_THEMWI_RTP_EXTENSIONS	= 0xf2,
 };
 
-/* GSM 08.08 3.2.2.5 Cause */
+/* 3GPP TS 48.008 3.2.3 Signalling Field Element Coding.
+   See also extra fields in 3.2.2.58 and 3.2.2.80 */
+enum GSM0808_SIGNALLING_FIELD_ELEMENT_CODING {
+	GSM0808_FE_IE_EXTRA_INFORMATION = 0x01, /*< 3.2.3.1  */
+	GSM0808_FE_IE_CURRENT_CHANNEL_TYPE_2 = 0x02, /*< 3.2.3.2  */
+	GSM0808_FE_IE_TARGET_CELL_RADIO_INFORMATION = 0x03, /*< 3.2.3.3  */
+	GSM0808_FE_IE_GPRS_SUSPEND_INFORMATION = 0x04, /*< 3.2.3.4  */
+	GSM0808_FE_IE_MULTIRATE_CONFIGURATION_INFORMATION = 0x05, /*< 3.2.3.5  */
+	GSM0808_FE_IE_DUAL_TRANSFER_MODE_INFORMATION = 0x06, /*< 3.2.3.6  */
+	GSM0808_FE_IE_INTER_RAT_HANDOVER_INFO = 0x07, /*< 3.2.3.7  */
+	GSM0808_FE_IE_CDMA2000_CAPABILITY_INFORMATION = 0x08, /*< 3.2.3.8  */
+	GSM0808_FE_IE_DOWNLINK_CELL_LOAD_INFORMATION = 0x09, /*< 3.2.3.9  */
+	GSM0808_FE_IE_UPLINK_CELL_LOAD_INFORMATION = 0x0a, /*< 3.2.3.10 */
+	GSM0808_FE_IE_CELL_LOAD_INFORMATION_GROUP = 0x0b, /*< 3.2.3.11 */
+	GSM0808_FE_IE_CELL_LOAD_INFORMATION = 0x0c, /*< 3.2.3.12 */
+	GSM0808_FE_IE_PS_INDICATION = 0x0d, /*< 3.2.3.13 */
+	GSM0808_FE_IE_DTM_HANDOVER_COMMAND_INDICATION = 0x0e, /*< 3.2.3.14 */
+	GSM0808_FE_IE_D_RNTI = 0xfe, /*< 3.2.3.15 */
+	GSM0808_FE_IE_IRAT_MEASUREMENT_CONFIGURATION = 0x0f, /*< 3.2.3.16 */
+	GSM0808_FE_IE_SOURCE_CELL_ID = 0x10, /*< 3.2.3.17 */
+	GSM0808_FE_IE_IRAT_MEASUREMENT_CONFIGURATION_EXTENDED_E_ARFCNS = 0x11, /*< 3.2.3.18 */
+	GSM0808_FE_IE_VGCS_TALKER_MODE = 0x6f, /*< 3.2.2.93 */
+	GSM0808_FE_IE_LAST_USED_EUTRAN_PLMN_ID = 0x95, /*< 3.2.2.127 */
+};
+
+/* 3GPP TS 48.008 3.2.2.5 Cause */
 enum gsm0808_cause {
 	GSM0808_CAUSE_RADIO_INTERFACE_MESSAGE_FAILURE			= 0,
 	GSM0808_CAUSE_RADIO_INTERFACE_FAILURE				= 1,
@@ -311,7 +384,7 @@ enum gsm0808_cause {
 	GSM0808_CAUSE_REDUCE_LOAD_IN_SERVING_CELL			= 0x10,
 	GSM0808_CAUSE_TRAFFIC_LOAD_IN_TGT_HIGHER_THAN_IN_SRC_CELL	= 0x11,
 	GSM0808_CAUSE_RELOCATION_TRIGGERED				= 0x12,
-	GSM0808_CAUSE_REQUSTED_OPT_NOT_AUTHORISED			= 0x14,
+	GSM0808_CAUSE_REQUESTED_OPT_NOT_AUTHORISED			= 0x14,
 	GSM0808_CAUSE_ALT_CHAN_CONFIG_REQUESTED				= 0x15,
 	GSM0808_CAUSE_RESP_TO_INT_HO_ENQ_MSG				= 0x16,
 	GSM0808_CAUSE_INT_HO_ENQUIRY_REJECT				= 0x17,
@@ -353,8 +426,20 @@ enum gsm0808_cause {
 	GSM0808_CAUSE_DTM_HO_INVALID_PS_IND				= 0x56,
 	GSM0808_CAUSE_CALL_ID_ALREADY_ALLOC				= 0x57,
 	GSM0808_CAUSE_PROTOCOL_ERROR_BETWEEN_BSS_AND_MSC		= 96,
-	GSM0808_CAUSE_VGCS_VBS_CALL_NON_EXISTANT			= 0x61,
+	GSM0808_CAUSE_VGCS_VBS_CALL_NON_EXISTENT			= 0x61,
 	GSM0808_CAUSE_DTM_HO_TIMER_EXPIRY				= 0x62,
+};
+
+/* 3GPP TS 08.08 §3.2.2.5 Cause Class */
+enum gsm0808_cause_class {
+	GSM0808_CAUSE_CLASS_NORM0		= 0,
+	GSM0808_CAUSE_CLASS_NORM1		= 1,
+	GSM0808_CAUSE_CLASS_RES_UNAVAIL		= 2,
+	GSM0808_CAUSE_CLASS_SRV_OPT_NA		= 3,
+	GSM0808_CAUSE_CLASS_SRV_OPT_NIMPL	= 4,
+	GSM0808_CAUSE_CLASS_INVAL		= 5,
+	GSM0808_CAUSE_CLASS_PERR		= 6,
+	GSM0808_CAUSE_CLASS_INTW		= 7,
 };
 
 /* GSM 08.08 3.2.2.11 Channel Type */
@@ -362,13 +447,15 @@ enum gsm0808_chan_indicator {
 	GSM0808_CHAN_SPEECH = 1,
 	GSM0808_CHAN_DATA   = 2,
 	GSM0808_CHAN_SIGN   = 3,
+	GSM0808_CHAN_SPEECH_CTM_TEXT_TELEPHONY = 4,
 };
 
 /* GSM 08.08 3.2.2.11 Channel Type */
+#define GSM0808_DATA_FULL_RPREF GSM0808_DATA_FULL_PREF
 enum gsm0808_chan_rate_type_data {
 	GSM0808_DATA_FULL_BM	= 0x8,
 	GSM0808_DATA_HALF_LM	= 0x9,
-	GSM0808_DATA_FULL_RPREF	= 0xa,
+	GSM0808_DATA_FULL_PREF	= 0xa,
 	GSM0808_DATA_HALF_PREF	= 0xb,
 	GSM0808_DATA_FULL_PREF_NO_CHANGE	= 0x1a,
 	GSM0808_DATA_HALF_PREF_NO_CHANGE	= 0x1b,
@@ -389,14 +476,97 @@ enum gsm0808_chan_rate_type_speech {
 };
 
 /* GSM 08.08 3.2.2.11 Channel Type */
-enum gsm0808_permitted_speech {
-	GSM0808_PERM_FR1	= 0x01,
-	GSM0808_PERM_FR2	= 0x11,
-	GSM0808_PERM_FR3	= 0x21,
-	GSM0808_PERM_HR1	= GSM0808_PERM_FR1 | 0x4,
-	GSM0808_PERM_HR2	= GSM0808_PERM_FR2 | 0x4,
-	GSM0808_PERM_HR3	= GSM0808_PERM_FR3 | 0x4,
+enum gsm0808_chan_rate_type_sign {
+	GSM0808_SIGN_ANY                 = 0x00,
+	GSM0808_SIGN_SDCCH               = 0x01,
+	GSM0808_SIGN_SDCCH_FULL_BM       = 0x02,
+	GSM0808_SIGN_SDCCH_HALF_LM       = 0x03,
+	GSM0808_SIGN_FULL_BM             = 0x08,
+	GSM0808_SIGN_HALF_LM             = 0x09,
+	GSM0808_SIGN_FULL_PREF           = 0x0a,
+	GSM0808_SIGN_HALF_PREF           = 0x0b,
+	GSM0808_SIGN_FULL_PREF_NO_CHANGE = 0x1a,
+	GSM0808_SIGN_HALF_PREF_NO_CHANGE = 0x1b,
 };
+
+/*! GSM 08.08 3.2.2.11 Channel Type
+ *  (see also 3GPP TS 48.008, section 3.2.2.11) */
+enum gsm0808_permitted_speech {
+	GSM0808_PERM_FR1	= 0x01, /*!< GSM FR */
+	GSM0808_PERM_FR2	= 0x11, /*!< GSM EFR */
+	GSM0808_PERM_FR3	= 0x21, /*!< FR AMR */
+	GSM0808_PERM_FR4	= 0x41, /*!< OFR AMR-WB */
+	GSM0808_PERM_FR5	= 0x42, /*!< FR AMR-WB */
+	GSM0808_PERM_HR1	= GSM0808_PERM_FR1 | 0x4, /*!< GSM HR */
+	GSM0808_PERM_HR2	= GSM0808_PERM_FR2 | 0x4, /*!< (deprecated) */
+	GSM0808_PERM_HR3	= GSM0808_PERM_FR3 | 0x4, /*!< HR AMR */
+	GSM0808_PERM_HR4	= 0x46, /*!< OHR AMR-WB */
+	GSM0808_PERM_HR6	= 0x45, /*!< OHR AMR */
+};
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Transparent: Data Rate */
+enum gsm0808_data_rate_transp {
+	GSM0808_DATA_RATE_TRANSP_32k0	 = 0x3a,
+	GSM0808_DATA_RATE_TRANSP_28k8	 = 0x39,
+	GSM0808_DATA_RATE_TRANSP_14k4	 = 0x18,
+	GSM0808_DATA_RATE_TRANSP_9k6	 = 0x10,
+	GSM0808_DATA_RATE_TRANSP_4k8	 = 0x11,
+	GSM0808_DATA_RATE_TRANSP_2k4	 = 0x12,
+	GSM0808_DATA_RATE_TRANSP_1k2	 = 0x13,
+	GSM0808_DATA_RATE_TRANSP_600	 = 0x14,
+	GSM0808_DATA_RATE_TRANSP_1200_75 = 0x15,
+};
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Non-Transparent: Radio Interface Data Rate (preferred) */
+enum gsm0808_data_rate_non_transp {
+	GSM0808_DATA_RATE_NON_TRANSP_12000_6000	= 0x00,
+	GSM0808_DATA_RATE_NON_TRANSP_43k5	= 0x34,
+	GSM0808_DATA_RATE_NON_TRANSP_29k0	= 0x31,
+	GSM0808_DATA_RATE_NON_TRANSP_14k5	= 0x14,
+	GSM0808_DATA_RATE_NON_TRANSP_12k0	= 0x10,
+	GSM0808_DATA_RATE_NON_TRANSP_6k0	= 0x11,
+};
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Non-Transparent: Allowed Radio Interface Data Rate (all possible allowed) */
+enum gsm0808_data_rate_allowed_r_if {
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_43k5 = 0x40,
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_32k0 = 0x20,
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_29k0 = 0x10,
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_14k5 = 0x08,
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_12k0 = 0x02,
+	GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_6k0  = 0x01,
+};
+
+extern const struct value_string gsm0808_permitted_speech_names[];
+static inline const char *gsm0808_permitted_speech_name(enum gsm0808_permitted_speech val)
+{ return get_value_string(gsm0808_permitted_speech_names, val); }
+
+/*! 3GPP TS 48.008, 3.2.2.103 Speech Codec Type */
+enum gsm0808_speech_codec_type {
+	GSM0808_SCT_FR1	= 0x0, /*!< GSM FR */
+	GSM0808_SCT_FR2	= 0x2, /*!< GSM EFR */
+	GSM0808_SCT_FR3	= 0x3, /*!< FR AMR */
+	GSM0808_SCT_FR4	= 0xc, /*!< OFR AMR-WB */
+	GSM0808_SCT_FR5	= 0x9, /*!< FR AMR-WB */
+	GSM0808_SCT_HR1	= 0x1, /*!< GSM_HR */
+	GSM0808_SCT_HR3	= 0x4, /*!< HR_AMR */
+	GSM0808_SCT_HR4	= 0xd, /*!< OHR AMR-WB */
+	GSM0808_SCT_HR6	= 0xb, /*!< OHR AMR */
+	GSM0808_SCT_CSD	= 0xfd, /*!< CSData (see also TS 26.103) */
+};
+
+/* Codec Extension (the real Codec Type follows in the next octet).
+ * This value is intentionally not included in gsm0808_speech_codec_type,
+ * because {enc,dec}_speech_codec() functions take care of the extended
+ * encoding internally.  It shall not be used in struct gsm0808_speech_codec. */
+#define GSM0808_SCT_EXT	0x0f
+
+extern const struct value_string gsm0808_speech_codec_type_names[];
+static inline const char *gsm0808_speech_codec_type_name(enum gsm0808_speech_codec_type val)
+{ return get_value_string(gsm0808_speech_codec_type_names, val); }
 
 /* GSM 08.08 3.2.2.44 Chosen Encryption Algorithm */
 enum gsm0808_chosen_enc_alg {
@@ -409,6 +579,7 @@ enum gsm0808_chosen_enc_alg {
 	GSM0808_ALG_ID_A5_6	= 0x07,
 	GSM0808_ALG_ID_A5_7	= 0x08,
 };
+extern const struct value_string gsm0808_chosen_enc_alg_names[];
 
 /* GSM 08.08 3.2.2.85 Paging Information */
 enum gsm0808_paging_info {
@@ -416,3 +587,237 @@ enum gsm0808_paging_info {
 	GSM0808_PAGINF_FOR_SMS		= 0x01,
 	GSM0808_PAGINF_FOR_USSD		= 0x02,
 };
+
+/*! 3GPP TS 48.008 3.2.2.104 Speech Codec.
+ * Valid if (fi || pi || pt) == true, otherwise ignore. */
+struct gsm0808_speech_codec {
+	/*! Full IP: AoIP with compressed speech via RTP/UDP/IP. */
+	bool fi;
+	/*! PCMoIP: PCM over A-Interface via RTP/UPD/IP. */
+	bool pi;
+	/*! PCMoTDM: PCM over A-Interface with TDM as transport. */
+	bool pt;
+	/*! TFO (Inband Tandem Free Operation). Only valid if (pi || pt) == true. */
+	bool tf;
+	/*! See enum gsm0808_speech_codec_type. */
+	uint8_t type;
+	/*! For examples, see enum gsm0808_speech_codec_defaults. */
+	uint16_t cfg;
+};
+
+/*! Default speech codec configurations: Some codecs specified with
+ *  struct gsm0808_speech_codec, require a configuration (cfg). The following
+ *  default configuration will configure the codec (RTP) to match the
+ *  configuration that is used on the air interface (Um).
+ *
+ *  Default values for FR_AMR, HR_AMR and OHR_AMR:
+ *  See also: 3GPP TS 28.062, Table 7.11.3.1.3-2: Preferred Configurations for
+ *  the Adaptive Multi-Rate Codec Types and 3GPP TS 48.008, Section 3.2.2.103.
+ *
+ *  Default values for FR_AMR_WB, OFR_AMR_WB and OHR_AMR_WB:
+ *  See also: 3GPP TS 26.103, Table 5.7-1: Allowed Configurations
+ *  for the Adaptive Multi-Rate - Wideband Codec Types
+ *
+ * This is a copy of 3GPP TS 28.062, Table 7.11.3.1.3-2:
+ *
+ *       S0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+ * 12,20    (x)                x                    x  x
+ * 10,20                    x                 x  x
+ * 7,95                  x                          x  x
+ * 7,40      x        x                 x  x
+ * 6,70            x                 x  x  x  x  x
+ * 5,90      x  x                 x  x  x  x  x  x  x  x
+ * 5,15
+ * 4,75   x  x                    x  x  x  x  x  x  x  x
+ *
+ * OM     F  F  F  F  F  F  F  F  F  F  F  A  F  A  F  A
+ *
+ * HR     Y  Y  Y  Y  Y  Y        Y  Y  Y
+ * FR     Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y  Y
+ *
+ * Each bit allows one Codec Configuration.
+ * E.g. when bit S3 is set, look at column labeled "3", and see that only 6,7k is active in this configuration; it is
+ * "F" forbidden to change in Optimisation Mode, "Y" HR AMR supports this mode, and "Y" FR AMR can also do it.
+ *
+ * This means that whichever configuration is chosen from S0 thru S15, there are never more than four rates active.
+ *
+ * The spec praises S1 as the most desired configuration: "because it leads in all call cases to TFO/TrFO compatible
+ * connections with optimal voice quality." (Since HR AMR supports up to 7.95k, it seems that S14 would be more optimal
+ * voice quality, but it is not marked as supported by HR AMR.)
+ *
+ * For FR_AMR below, the default of 0x57ff means:
+ *  0x57ff = 0101 0111 1111 1111
+ *            ^14  ^10         ^0
+ * allow config 0 thru 10, and configs 12 and 14.
+ *
+ * For HR_AMR, drop all those where there is no "Y" in the HR row:
+ *  0x073f = 0000 0111 0011 1111
+ *           ^15  ^11   ^6     ^0
+ */
+enum gsm0808_speech_codec_defaults {
+	GSM0808_SC_CFG_DEFAULT_FR_AMR		= 0x57ff,
+	GSM0808_SC_CFG_DEFAULT_HR_AMR		= 0x073f,
+	GSM0808_SC_CFG_DEFAULT_OHR_AMR		= 0x57ff,
+	GSM0808_SC_CFG_DEFAULT_FR_AMR_WB	= 0x01,
+	GSM0808_SC_CFG_DEFAULT_OFR_AMR_WB	= 0x15,
+	GSM0808_SC_CFG_DEFAULT_OHR_AMR_WB	= 0x01,
+};
+
+/*! Default speech codec configurations broken down by rate.
+ *  See also: 3GPP TS 28.062, Table 7.11.3.1.3-2: Preferred Configurations for
+ *  the Adaptive Multi-Rate Codec Types.
+ *
+ * Set all Sn bits that have this rate listed as active.
+ */
+enum gsm0808_speech_codec_rate_defaults {
+	GSM0808_SC_CFG_DEFAULT_AMR_4_75 = 0xff03,
+	GSM0808_SC_CFG_DEFAULT_AMR_5_15 = 0x0000,
+	GSM0808_SC_CFG_DEFAULT_AMR_5_90 = 0xff06,
+	GSM0808_SC_CFG_DEFAULT_AMR_6_70 = 0x3e08,
+	GSM0808_SC_CFG_DEFAULT_AMR_7_40 = 0x0c12,
+	GSM0808_SC_CFG_DEFAULT_AMR_7_95 = 0xc020,
+	GSM0808_SC_CFG_DEFAULT_AMR_10_2 = 0x3040,
+	GSM0808_SC_CFG_DEFAULT_AMR_12_2 = 0xc082
+};
+
+/*! Single speech codec configurations broken down by rate.
+ *  See also: 3GPP TS 28.062, Table 7.11.3.1.3-2: Preferred Configurations for
+ *  the Adaptive Multi-Rate Codec Types.
+ *
+ * Set bit Sn (S0 = 0x01), where Sn is identified by a descriptive name.
+ */
+enum gsm0808_speech_codec_rate {
+	GSM0808_SC_CFG_AMR_4_75 = 0x0001,
+	GSM0808_SC_CFG_AMR_4_75_5_90_7_40_12_20 = 0x0002,
+	GSM0808_SC_CFG_AMR_5_90 = 0x0004,
+	GSM0808_SC_CFG_AMR_6_70 = 0x0008,
+	GSM0808_SC_CFG_AMR_7_40 = 0x0010,
+	GSM0808_SC_CFG_AMR_7_95 = 0x0020,
+	GSM0808_SC_CFG_AMR_10_2 = 0x0040,
+	GSM0808_SC_CFG_AMR_12_2 = 0x0080,
+};
+
+/* Bit index of a mode as returned by gsm0808_amr_modes_from_cfg[].
+ * Example:
+ *   if (gsm0808_amr_modes_from_cfg[full_rate ? 1 : 0][9] & GSM0808_AMR_MODE_4_75)
+ *       printf("S9 supports 4k75");
+ */
+enum gsm0808_amr_mode {
+	GSM0808_AMR_MODE_4_75 = 0,
+	GSM0808_AMR_MODE_5_15,
+	GSM0808_AMR_MODE_5_90,
+	GSM0808_AMR_MODE_6_70,
+	GSM0808_AMR_MODE_7_40,
+	GSM0808_AMR_MODE_7_95,
+	GSM0808_AMR_MODE_10_2,
+	GSM0808_AMR_MODE_12_2,
+};
+extern const struct value_string gsm0808_amr_mode_names[];
+static inline const char *gsm0808_amr_mode_name(enum gsm0808_amr_mode val)
+{
+	return get_value_string(gsm0808_amr_mode_names, val);
+}
+
+extern const uint8_t gsm0808_amr_modes_from_cfg[2][16];
+
+/* 3GPP TS 48.008 3.2.2.103 Speech Codec List */
+#define SPEECH_CODEC_MAXLEN 255
+struct gsm0808_speech_codec_list {
+	struct gsm0808_speech_codec codec[SPEECH_CODEC_MAXLEN];
+	uint8_t len;
+};
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Asymmetry Preference (used for data, non-transparent service) */
+enum gsm0808_channel_type_asym_pref {
+	GSM0808_CT_ASYM_PREF_NOT_APPLICABLE = 0,
+	GSM0808_CT_ASYM_PREF_UL		    = 1,
+	GSM0808_CT_ASYM_PREF_DL		    = 2,
+	GSM0808_CT_ASYM_PREF_SPARE	    = 3,
+};
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type */
+#define CH_TYPE_PERM_SPCH_MAXLEN 9
+struct gsm0808_channel_type {
+	uint8_t ch_indctr;
+	uint8_t ch_rate_type;
+
+	/* Speech only */
+	uint8_t perm_spch[CH_TYPE_PERM_SPCH_MAXLEN];
+	unsigned int perm_spch_len;
+
+	/* Data only */
+	bool data_transparent;
+	uint8_t data_rate;
+	bool data_rate_allowed_is_set;
+	uint8_t data_rate_allowed;
+	bool data_asym_pref_is_set;
+	enum gsm0808_channel_type_asym_pref data_asym_pref;
+};
+
+/* 3GPP TS 48.008 3.2.2.10 Encryption Information */
+#define ENCRY_INFO_KEY_MAXLEN 252
+#define ENCRY_INFO_PERM_ALGO_MAXLEN 8
+struct gsm0808_encrypt_info {
+	uint8_t perm_algo[ENCRY_INFO_PERM_ALGO_MAXLEN];
+	unsigned int perm_algo_len;
+	uint8_t key[ENCRY_INFO_KEY_MAXLEN];
+	unsigned int key_len;
+};
+
+#define CELL_ID_LIST_LAC_MAXLEN 127
+/*!
+ * DEPRECATED: This definition of the cell identifier list is
+ * insufficient. It cannot support all types of cell identifiers.
+ * Use struct gsm0808_cell_id_list2 in gsm0808_utils.h instead.
+ *
+ * 3GPP TS 48.008 3.2.2.27 Cell Identifier List */
+struct gsm0808_cell_id_list {
+	uint8_t id_discr;
+	uint16_t id_list_lac[CELL_ID_LIST_LAC_MAXLEN];
+	unsigned int id_list_len;
+};
+
+/* TS 48.008 3.2.2.116 */
+enum gsm0808_lcls_config {
+	GSM0808_LCLS_CFG_BOTH_WAY					= 0x00,
+	GSM0808_LCLS_CFG_BOTH_WAY_AND_BICAST_UL				= 0x01,
+	GSM0808_LCLS_CFG_BOTH_WAY_AND_SEND_DL				= 0x02,
+	GSM0808_LCLS_CFG_BOTH_WAY_AND_SEND_DL_BLOCK_LOCAL_DL		= 0x03,
+	GSM0808_LCLS_CFG_BOTH_WAY_AND_BICAST_UL_SEND_DL			= 0x04,
+	GSM0808_LCLS_CFG_BOTH_WAY_AND_BICAST_UL_SEND_DL_BLOCK_LOCAL_DL	= 0x05,
+	GSM0808_LCLS_CFG_NA						= 0xFF
+};
+
+/* TS 48.008 3.2.2.117 */
+enum gsm0808_lcls_control {
+	GSM0808_LCLS_CSC_CONNECT					= 0x00,
+	GSM0808_LCLS_CSC_DO_NOT_CONNECT					= 0x01,
+	GSM0808_LCLS_CSC_RELEASE_LCLS					= 0x02,
+	GSM0808_LCLS_CSC_BICAST_UL_AT_HANDOVER				= 0x03,
+	GSM0808_LCLS_CSC_BICAST_UL_AND_RECV_DL_AT_HANDOVER		= 0x04,
+	GSM0808_LCLS_CSC_NA						= 0xFF
+};
+
+/* TS 48.008 3.2.2.119 */
+enum gsm0808_lcls_status {
+	GSM0808_LCLS_STS_NOT_YET_LS		= 0x00,
+	GSM0808_LCLS_STS_NOT_POSSIBLE_LS	= 0x01,
+	GSM0808_LCLS_STS_NO_LONGER_LS		= 0x02,
+	GSM0808_LCLS_STS_REQ_LCLS_NOT_SUPP	= 0x03,
+	GSM0808_LCLS_STS_LOCALLY_SWITCHED	= 0x04,
+	GSM0808_LCLS_STS_NA			= 0xFF
+};
+
+/* 3GPP TS 48.008 3.2.2.32 Diagnostics */
+struct gsm0808_diagnostics {
+	uint8_t error_pointer_octet;
+#if OSMO_IS_LITTLE_ENDIAN
+	uint8_t error_pointer_bit_spare:4,
+			error_pointer_bit:4;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t error_pointer_bit:4, error_pointer_bit_spare:4;
+#endif
+	uint8_t msg[0]; /*! received message which provoked the error */
+} __attribute__((packed));

@@ -13,14 +13,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <osmocom/core/msgfile.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/utils.h>
 
 #include <stdio.h>
 
@@ -43,8 +40,8 @@ int main(int argc, char **argv)
 {
 	struct osmo_config_list *entries;
 
-	/* todo use msgfile_test.c.in and replace the path */
-	entries = osmo_config_list_parse(NULL, "msgconfig.cfg");
+	OSMO_ASSERT(argc > 1);
+	entries = osmo_config_list_parse(NULL, argv[1]);
 	dump_entries(entries);
 	talloc_free(entries);
 

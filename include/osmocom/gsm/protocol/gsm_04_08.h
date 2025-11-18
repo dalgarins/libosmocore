@@ -1,21 +1,35 @@
+/*! \file gsm_04_08.h
+ * GSM TS 04.08  definitions. */
+
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
-/* GSM TS 04.08  definitions */
+#include <osmocom/core/utils.h>
+#include <osmocom/core/endian.h>
+
+#include <osmocom/gsm/gsm_utils.h>
+
 struct gsm_lchan;
 
 /* Chapter 10.5.1.5 */
 struct gsm48_classmark1 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t pwr_lev:3,
 		 a5_1:1,
 		 es_ind:1,
 		 rev_lev:2,
 		 spare:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t spare:1, rev_lev:2, es_ind:1, a5_1:1, pwr_lev:3;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.1.6 */
 struct gsm48_classmark2 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t pwr_lev:3,
 		 a5_1:1,
 		 es_ind:1,
@@ -36,10 +50,204 @@ struct gsm48_classmark2 {
 		 lcsva_cap:1,
 		 spare4:1,
 		 cm3:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t spare:1, rev_lev:2, es_ind:1, a5_1:1, pwr_lev:3;
+	uint8_t	spare2:1, ps_cap:1, ss_scr:2, sm_cap:1, vbs:1, vgcs:1, fc:1;
+	uint8_t	cm3:1, spare4:1, lcsva_cap:1, spare3:1, solsa:1, cmsp:1, a5_3:1, a5_2:1;
+#endif
 } __attribute__ ((packed));
 
+/* Chapter 10.5.1.7 */
+struct gsm48_classmark3 {
+	uint8_t a5_bits;
+	uint8_t mult_band_supp;
+	uint8_t assoc_radio_cap_1;
+	uint8_t assoc_radio_cap_2;
+
+	struct {
+		bool present;
+		uint8_t r_gsm_assoc_radio_cap;
+	} r_support;
+
+	struct {
+		bool present;
+		uint8_t mslot_class;
+	} hscsd_mult_slot_cap;
+
+	bool ucs2_treatment;
+	bool extended_meas_cap;
+
+	struct {
+		bool present;
+		uint8_t sms_value;
+		uint8_t sm_value;
+	} ms_meas_cap;
+
+	struct {
+		bool present;
+		uint8_t method;
+	} ms_pos_method_cap;
+
+	struct {
+		bool present;
+		uint8_t mslot_class;
+	} ecsd_multislot_cap;
+
+	struct {
+		bool present;
+		bool mod_cap;
+
+		struct {
+			bool present;
+			uint8_t value;
+		} rf_pwr_cap_1;
+
+		struct {
+			bool present;
+			uint8_t value;
+		} rf_pwr_cap_2;
+
+	} psk8_struct;
+
+	struct {
+		bool present;
+		uint8_t value;
+		uint8_t assoc_radio_cap;
+	} gsm_400_bands_supp;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} gsm_850_assoc_radio_cap;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} gsm_1900_assoc_radio_cap;
+
+	bool umts_fdd_rat_cap;
+	bool umts_tdd_rat_cap;
+	bool cdma200_rat_cap;
+
+	struct {
+		bool present;
+		uint8_t mslot_class;
+		bool single_slot_dtm;
+		struct {
+			bool present;
+			uint8_t mslot_class;
+		} dtm_egprs_multislot_cap;
+	} dtm_gprs_multislot_cap;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} single_band_supp;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} gsm_750_assoc_radio_cap;
+
+	bool umts_1_28_mcps_tdd_rat_cap;
+	bool geran_feature_package;
+
+	struct {
+		bool present;
+		uint8_t mslot_class;
+		struct {
+			bool present;
+			uint8_t mslot_class;
+		} extended_dtm_egprs_multislot_cap;
+	} extended_dtm_gprs_multislot_cap;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} high_multislot_cap;
+
+	bool geran_feature_package_2;
+	uint8_t gmsk_multislot_power_prof;
+	uint8_t psk8_multislot_power_prof;
+
+	struct {
+		bool present;
+		uint8_t value;
+		uint8_t assoc_radio_cap;
+	} t_gsm_400_bands_supp;
+
+	uint8_t dl_advanced_rx_perf;
+	bool dtm_enhancements_cap;
+
+	struct {
+		bool present;
+		uint8_t mslot_class;
+		bool offset_required;
+		struct {
+			bool present;
+			uint8_t mslot_class;
+		} dtm_egprs_high_multislot_cap;
+	} dtm_gprs_high_multislot_cap;
+
+	bool repeated_acch_capability;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} gsm_710_assoc_radio_cap;
+
+	struct {
+		bool present;
+		uint8_t value;
+	} t_gsm_810_assoc_radio_cap;
+
+	bool ciphering_mode_setting_cap;
+	bool add_pos_cap;
+	bool e_utra_fdd_supp;
+	bool e_utra_tdd_supp;
+	bool e_utra_meas_rep_supp;
+	bool prio_resel_supp;
+	bool utra_csg_cells_rep;
+
+	uint8_t vamos_level;
+	uint8_t tighter_capability;
+
+	bool sel_ciph_dl_sacch;
+
+	uint8_t cs_ps_srvcc_geran_utra;
+	uint8_t cs_ps_srvcc_geran_eutra;
+
+	bool geran_net_sharing;
+	bool e_utra_wb_rsrq_meas_supp;
+	bool er_band_support;
+	bool utra_mult_band_ind_supp;
+	bool e_utra_mult_band_ind_supp;
+	bool extended_tsc_set_cap_supp;
+	bool extended_earfcn_val_range;
+};
+
+struct osmo_gsm48_classmark {
+	bool classmark1_set;
+	struct gsm48_classmark1 classmark1;
+	uint8_t classmark2_len;
+	struct gsm48_classmark2 classmark2;
+	uint8_t classmark3_len;
+	uint8_t classmark3[14]; /* if cm3 gets extended by spec, it will be truncated */
+};
+
+bool osmo_gsm48_classmark_is_r99(const struct osmo_gsm48_classmark *cm);
+bool osmo_gsm48_classmark1_is_r99(const struct gsm48_classmark1 *cm1);
+bool osmo_gsm48_classmark2_is_r99(const struct gsm48_classmark2 *cm2, uint8_t cm2_len);
+int osmo_gsm48_classmark_supports_a5(const struct osmo_gsm48_classmark *cm, uint8_t a5);
+const char *osmo_gsm48_classmark_a5_name(const struct osmo_gsm48_classmark *cm);
+char *osmo_gsm48_classmark_a5_name_buf(char *buf, size_t buf_len, const struct osmo_gsm48_classmark *cm);
+char *osmo_gsm48_classmark_a5_name_c(const void *ctx, const struct osmo_gsm48_classmark *cm);
+void osmo_gsm48_classmark_update(struct osmo_gsm48_classmark *dst, const struct osmo_gsm48_classmark *src);
+int8_t osmo_gsm48_rfpowercap2powerclass(enum gsm_band band, uint8_t rf_power_cap);
 /* Chapter 10.5.2.1b.3 */
 struct gsm48_range_1024 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	w1_hi:2,
 		 f0:1,
 		 form_id:5;
@@ -71,10 +279,30 @@ struct gsm48_range_1024 {
 		 w14_lo:3;
 	uint8_t	w16:6,
 		 w15_lo:2;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	form_id:5, f0:1, w1_hi:2;
+	uint8_t	w1_lo;
+	uint8_t	w2_hi;
+	uint8_t	w2_lo:1, w3_hi:7;
+	uint8_t	w3_lo:2, w4_hi:6;
+	uint8_t	w4_lo:2, w5_hi:6;
+	uint8_t	w5_lo:2, w6_hi:6;
+	uint8_t	w6_lo:2, w7_hi:6;
+	uint8_t	w7_lo:2, w8_hi:6;
+	uint8_t	w8_lo:1, w9:7;
+	uint8_t	w10:7, w11_hi:1;
+	uint8_t	w11_lo:6, w12_hi:2;
+	uint8_t	w12_lo:5, w13_hi:3;
+	uint8_t	w13_lo:4, w14_hi:4;
+	uint8_t	w14_lo:3, w15_hi:5;
+	uint8_t	w15_lo:2, w16:6;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.1b.4 */
 struct gsm48_range_512 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	orig_arfcn_hi:1,
 		 form_id:7;
 	uint8_t	orig_arfcn_mid;
@@ -106,10 +334,30 @@ struct gsm48_range_512 {
 		 w15:6;
 	uint8_t	w17:5,
 		 w16_lo:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	form_id:7, orig_arfcn_hi:1;
+	uint8_t	orig_arfcn_mid;
+	uint8_t	orig_arfcn_lo:1, w1_hi:7;
+	uint8_t	w1_lo:2, w2_hi:6;
+	uint8_t	w2_lo:2, w3_hi:6;
+	uint8_t	w3_lo:2, w4_hi:6;
+	uint8_t	w4_lo:1, w5:7;
+	uint8_t	w6:7, w7_hi:1;
+	uint8_t	w7_lo:6, w8_hi:2;
+	uint8_t	w8_lo:4, w9_hi:4;
+	uint8_t	w9_lo:2, w10:6;
+	uint8_t	w11:6, w12_hi:2;
+	uint8_t	w12_lo:4, w13_hi:4;
+	uint8_t	w13_lo:2, w14:6;
+	uint8_t	w15:6, w16_hi:2;
+	uint8_t	w16_lo:3, w17:5;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.1b.5 */
 struct gsm48_range_256 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	orig_arfcn_hi:1,
 		 form_id:7;
 	uint8_t	orig_arfcn_mid;
@@ -147,10 +395,30 @@ struct gsm48_range_256 {
 	uint8_t	spare:1,
 		 w21:4,
 		 w20_lo:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	form_id:7, orig_arfcn_hi:1;
+	uint8_t	orig_arfcn_mid;
+	uint8_t	orig_arfcn_lo:1, w1_hi:7;
+	uint8_t	w1_lo:1, w2:7;
+	uint8_t	w3:7, w4_hi:1;
+	uint8_t	w4_lo:5, w5_hi:3;
+	uint8_t	w5_lo:3, w6_hi:5;
+	uint8_t	w6_lo:1, w7:6, w8_hi:1;
+	uint8_t	w8_lo:4, w9_hi:4;
+	uint8_t	w9_lo:1, w10:5, w11_hi:2;
+	uint8_t	w11_lo:3, w12:5;
+	uint8_t	w13:5, w14_hi:3;
+	uint8_t	w14_lo:2, w15:5, w16_hi:1;
+	uint8_t	w16_lo:3, w17:4, w18_hi:1;
+	uint8_t	w18_lo:3, w19:4, w20_hi:1;
+	uint8_t	w20_lo:3, w21:4, spare:1;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.1b.6 */
 struct gsm48_range_128 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	orig_arfcn_hi:1,
 		 form_id:7;
 	uint8_t	orig_arfcn_mid;
@@ -190,16 +458,43 @@ struct gsm48_range_128 {
 		 w28:3,
 		 w27:3,
 		 w26_lo:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	form_id:7, orig_arfcn_hi:1;
+	uint8_t	orig_arfcn_mid;
+	uint8_t	orig_arfcn_lo:1, w1:7;
+	uint8_t	w2:6, w3_hi:2;
+	uint8_t	w3_lo:4, w4_hi:4;
+	uint8_t	w4_lo:1, w5:5, w6_hi:2;
+	uint8_t	w6_lo:3, w7:5;
+	uint8_t	w8:4, w9:4;
+	uint8_t	w10:4, w11:4;
+	uint8_t	w12:4, w13:4;
+	uint8_t	w14:4, w15:4;
+	uint8_t	w16:3, w17:3, w18_hi:2;
+	uint8_t	w18_lo:1, w19:3, w20:3, w21_hi:1;
+	uint8_t	w21_lo:2, w22:3, w23:3;
+	uint8_t	w24:3, w25:3, w26_hi:2;
+	uint8_t	w26_lo:1, w27:3, w28:3, spare:1;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.1b.7 */
 struct gsm48_var_bit {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	orig_arfcn_hi:1,
 		 form_id:7;
 	uint8_t	orig_arfcn_mid;
 	uint8_t	rrfcn1_7:7,
 		 orig_arfcn_lo:1;
 	uint8_t rrfcn8_111[13];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	form_id:7, orig_arfcn_hi:1;
+	uint8_t	orig_arfcn_mid;
+	uint8_t	orig_arfcn_lo:1, rrfcn1_7:7;
+	uint8_t rrfcn8_111[13];
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.5 */
@@ -207,24 +502,37 @@ struct gsm48_chan_desc {
 	uint8_t chan_nr;
 	union {
 		struct {
+#if OSMO_IS_LITTLE_ENDIAN
 			uint8_t maio_high:4,
 				 h:1,
 				 tsc:3;
 			uint8_t hsn:6,
 				 maio_low:2;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+			uint8_t tsc:3, h:1, maio_high:4;
+			uint8_t maio_low:2, hsn:6;
+#endif
 		} __attribute__ ((packed)) h1;
 		struct {
+#if OSMO_IS_LITTLE_ENDIAN
 			uint8_t arfcn_high:2,
 				 spare:2,
 				 h:1,
 				 tsc:3;
 			uint8_t arfcn_low;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+			uint8_t tsc:3, h:1, spare:2, arfcn_high:2;
+			uint8_t arfcn_low;
+#endif
 		} __attribute__ ((packed)) h0;
 	} __attribute__ ((packed));
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.20 */
 struct gsm48_meas_res {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t	rxlev_full:6,
 		 dtx_used:1,
 		 ba_used:1;
@@ -264,10 +572,36 @@ struct gsm48_meas_res {
 		 rxlev_nc6_lo:5;
 	uint8_t	bsic_nc6:6,
 		 bcch_f_nc6_lo:2;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	ba_used:1, dtx_used:1, rxlev_full:6;
+	uint8_t	spare:1, meas_valid:1, rxlev_sub:6;
+	uint8_t	spare2:1, rxqual_full:3, rxqual_sub:3, no_nc_n_hi:1;
+	uint8_t	no_nc_n_lo:2, rxlev_nc1:6;
+	uint8_t	bcch_f_nc1:5, bsic_nc1_hi:3;
+	uint8_t	bsic_nc1_lo:3, rxlev_nc2_hi:5;
+	uint8_t	rxlev_nc2_lo:1, bcch_f_nc2:5, bsic_nc2_hi:2;
+	uint8_t	bsic_nc2_lo:4, rxlev_nc3_hi:4;
+	uint8_t	rxlev_nc3_lo:2, bcch_f_nc3:5, bsic_nc3_hi:1;
+	uint8_t	bsic_nc3_lo:5, rxlev_nc4_hi:3;
+	uint8_t	rxlev_nc4_lo:3, bcch_f_nc4:5;
+	uint8_t	bsic_nc4:6, rxlev_nc5_hi:2;
+	uint8_t	rxlev_nc5_lo:4, bcch_f_nc5_hi:4;
+	uint8_t	bcch_f_nc5_lo:1, bsic_nc5:6, rxlev_nc6_hi:1;
+	uint8_t	rxlev_nc6_lo:5, bcch_f_nc6_hi:3;
+	uint8_t	bcch_f_nc6_lo:2, bsic_nc6:6;
+#endif
 } __attribute__ ((packed));
+
+/*! Check if the given mr contains valid measurement results */
+static inline bool gsm48_meas_res_is_valid(const struct gsm48_meas_res *mr)
+{
+	return (mr->meas_valid == 0); /* 0 means valid */
+}
 
 /* Chapter 10.5.2.21aa */
 struct gsm48_multi_rate_conf {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t smod : 2,
 		 spare: 1,
 		 icmi : 1,
@@ -281,49 +615,125 @@ struct gsm48_multi_rate_conf {
 		 m7_95 : 1,
 		 m10_2 : 1,
 		 m12_2 : 1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t ver:3, nscb:1, icmi:1, spare:1, smod:2;
+	uint8_t m12_2:1, m10_2:1, m7_95:1, m7_40:1, m6_70:1, m5_90:1, m5_15:1, m4_75:1;
+#endif
 } __attribute__((packed));
 
 /* Chapter 10.5.2.28(a) */
 struct gsm48_power_cmd {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t power_level:5,
 		 spare:2,
 		 atc:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t atc:1, spare:2, power_level:5;
+#endif
 } __attribute__((packed));
 
-/* Chapter 10.5.2.29 */
+/* 3GPP TS 44.018 Chapter 10.5.2.29 "RACH Control Parameters" */
 struct gsm48_rach_control {
-	uint8_t re :1,
-		 cell_bar :1,
-		 tx_integer :4,
-		 max_trans :2;
+#if OSMO_IS_LITTLE_ENDIAN
+	uint8_t re :1, /* RE, Call reestablishment allowed */
+		 cell_bar :1, /* CELL_BAR_ACCESS */
+		 tx_integer :4, /* Tx-integer */
+		 max_trans :2; /* Max_Retrans */
+	uint8_t t2; /* ACC 8-15 barred flags */
+	uint8_t t3; /* ACC 0-7 barred flags */
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t max_trans:2, tx_integer:4, cell_bar:1, re:1;
 	uint8_t t2;
 	uint8_t t3;
+#endif
 } __attribute__ ((packed));
 
+/*
+ * Mark an Access Control Class as barred.
+ *  \param[in] rach_control A Rach Control Information Element.
+ *  \param[in] acc Access Control Class number (0 - 15) which shall be barred.
+ */
+static inline void gsm48_barr_acc(struct gsm48_rach_control *rach_control, unsigned int acc)
+{
+	OSMO_ASSERT(acc <= 15);
+	if (acc >= 8)
+		rach_control->t2 |= (1 << (acc - 8));
+	else
+		rach_control->t3 |= (1 << (acc));
+}
+
+/*
+ * Mark an Access Control Class as allowed.
+ *  \param[in] rach_control A Rach Control Information Element.
+ *  \param[in] acc Access Control Class number (0 - 15) which shall be allowed.
+ */
+static inline void gsm48_allow_acc(struct gsm48_rach_control *rach_control, unsigned int acc)
+{
+	OSMO_ASSERT(acc <= 15);
+	if (acc >= 8)
+		rach_control->t2 &= ~(1 << (acc - 8));
+	else
+		rach_control->t3 &= ~(1 << (acc));
+}
+
+/*
+ * Indicate whether an Access Control Class is barred.
+ *  \param[in] rach_control A Rach Control Information Element.
+ *  \param[in] acc Access Control Class number (0 - 15).
+ *  \returns true if the Access Control class is barred, false otherwise
+ */
+static inline bool gsm48_acc_is_barred(struct gsm48_rach_control *rach_control, unsigned int acc)
+{
+	OSMO_ASSERT(acc <= 15);
+	if (acc >= 8)
+		return (rach_control->t2 & (1 << (acc - 8))) != 0;
+	return (rach_control->t3 & (1 << (acc))) != 0;
+}
 
 /* Chapter 10.5.2.30 */
 struct gsm48_req_ref {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t ra;
 	uint8_t t3_high:3,
 		 t1:5;
 	uint8_t t2:5,
 		 t3_low:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t ra;
+	uint8_t t1:5, t3_high:3;
+	uint8_t t3_low:3, t2:5;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.38 */
 struct gsm48_start_time {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t t3_high:3,
 		 t1:5;
 	uint8_t t2:5,
 		 t3_low:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t t1:5, t3_high:3;
+	uint8_t t3_low:3, t2:5;
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.2.39 */
 struct gsm48_sync_ind {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t si:2,
 		 rot:1,
 		 nci:1,
 		 sync_ie:4;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t sync_ie:4, nci:1, rot:1, si:2;
+#endif
 } __attribute__((packed));
 
 /*
@@ -336,16 +746,64 @@ struct gsm48_chan_mode_modify {
 	uint8_t mode;
 } __attribute__ ((packed));
 
+/*! 10.5.2.6 Channel Mode value */
 enum gsm48_chan_mode {
+	/*! Signalling only (TCH/F or TCH/H)  */
 	GSM48_CMODE_SIGN	= 0x00,
+	/*! Speech: FR (TCH/FS) or HR (TCH/HS) */
 	GSM48_CMODE_SPEECH_V1	= 0x01,
-	GSM48_CMODE_SPEECH_EFR	= 0x21,
-	GSM48_CMODE_SPEECH_AMR	= 0x41,
+	/*! Speech: EFR (TCH/EFS) */
+	GSM48_CMODE_SPEECH_EFR	= 0x21, /*!< a.k.a. V2 */
+	/*! Speech: AMR (TCH/AFS or TCH/AHS) */
+	GSM48_CMODE_SPEECH_AMR	= 0x41, /*!< a.k.a. V3 */
+	/*! Speech: OFR AMR-WB (O-TCH/WFS) or OHR AMR-WB (O-TCH/WHS) */
+	GSM48_CMODE_SPEECH_V4	= 0x81,
+	/*! Speech: FR AMR-WB (TCH/WFS) */
+	GSM48_CMODE_SPEECH_V5	= 0x82,
+	/*! Speech: OHR AMR (O-TCH/AHS) */
+	GSM48_CMODE_SPEECH_V6	= 0x83,
+
+	/* ECSD: 43.5 kbit/s (DL) + 14.5 kbit/s (UL) */
+	GSM48_CMODE_DATA_43k5_14k5	= 0x61,
+	/* ECSD: 29.0 kbit/s (DL) + 14.5 kbit/s (UL) */
+	GSM48_CMODE_DATA_29k0_14k5	= 0x62,
+	/* ECSD: 43.5 kbit/s (DL) + 29.0 kbit/s (UL) */
+	GSM48_CMODE_DATA_43k5_29k0	= 0x64,
+	/* ECSD: 14.5 kbit/s (DL) + 43.5 kbit/s (UL) */
+	GSM48_CMODE_DATA_14k5_43k5	= 0x67,
+	/* ECSD: 14.5 kbit/s (DL) + 29.0 kbit/s (UL) */
+	GSM48_CMODE_DATA_14k5_29k0	= 0x65,
+	/* ECSD: 29.0 kbit/s (DL) + 43.5 kbit/s (UL) */
+	GSM48_CMODE_DATA_29k0_43k5	= 0x66,
+
+	/*! ECSD: 43.5 kbit/s radio interface rate, 43.2 kbit/s services (E-TCH/F43.2) */
+	GSM48_CMODE_DATA_43k5	= 0x27,
+	/*! ECSD: 32.0 kbit/s radio interface rate, 32.0 kbit/s services (E-TCH/F32.0) */
+	GSM48_CMODE_DATA_32k0	= 0x63,
+	/*! ECSD: 29.0 kbit/s radio interface rate, 28.8 kbit/s services (E-TCH/F28.8) */
+	GSM48_CMODE_DATA_29k0	= 0x43,
+	/*! CSD: 14.5 kbit/s radio interface rate, 14.4 kbit/s services (TCH/F14.4) */
 	GSM48_CMODE_DATA_14k5	= 0x0f,
+	/*! CSD: 12.0 kbit/s radio interface rate, 9.6 kbit/s services (TCH/F9.6) */
 	GSM48_CMODE_DATA_12k0	= 0x03,
+	/*! CSD: 6.0 kbit/s radio interface rate, 4.8 kbit/s services (TCH/{F,H}4.8) */
 	GSM48_CMODE_DATA_6k0	= 0x0b,
+	/*! CSD: 3.6 kbit/s radio interface rate, 2.4 kbit/s and less services (TCH/{F,H}2.4) */
 	GSM48_CMODE_DATA_3k6	= 0x13,
+
+	/*! Same as GSM48_CMODE_SPEECH_V1, in VAMOS mode */
+	GSM48_CMODE_SPEECH_V1_VAMOS	= 0xc1,
+	/*! Same as GSM48_CMODE_SPEECH_EFR, in VAMOS mode */
+	GSM48_CMODE_SPEECH_V2_VAMOS	= 0xc2,
+	/*! Same as GSM48_CMODE_SPEECH_AMR, in VAMOS mode */
+	GSM48_CMODE_SPEECH_V3_VAMOS	= 0xc3,
+	/*! Speech: GSM48_CMODE_SPEECH_V5, in VAMOS mode */
+	GSM48_CMODE_SPEECH_V5_VAMOS	= 0xc5,
 };
+
+extern const struct value_string gsm48_chan_mode_names[];
+static inline const char *gsm48_chan_mode_name(enum gsm48_chan_mode val)
+{ return get_value_string(gsm48_chan_mode_names, val); }
 
 /* Chapter 9.1.2 */
 struct gsm48_ass_cmd {
@@ -363,12 +821,26 @@ struct gsm48_frq_redef {
 	uint8_t mob_alloc[0];
 } __attribute__((packed));
 
+/* Chapter 9.1.13b GPRS suspension request */
+struct gsm48_gprs_susp_req {
+	uint32_t tlli;
+	uint8_t ra_id[6];
+	uint8_t cause;
+	uint8_t options[0];
+} __attribute__ ((packed));
+
 /* Chapter 10.5.2.2 */
 struct gsm48_cell_desc {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t bcc:3,
 		 ncc:3,
 		 arfcn_hi:2;
 	uint8_t arfcn_lo;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t arfcn_hi:2, ncc:3, bcc:3;
+	uint8_t arfcn_lo;
+#endif
 } __attribute__((packed));
 
 /* Chapter 9.1.15 */
@@ -395,11 +867,31 @@ struct gsm48_imm_ass {
 
 /* Chapter 9.1.25 */
 struct gsm48_pag_resp {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t spare:4,
 		 key_seq:4;
-	uint32_t classmark2;
+	union {
+		uint32_t classmark2;  /* Backward compatibility */
+		struct {
+			uint8_t cm2_len;
+			struct gsm48_classmark2 cm2;
+		};
+	};
 	uint8_t mi_len;
 	uint8_t mi[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t key_seq:4, spare:4;
+	union {
+		uint32_t classmark2;
+		struct {
+			uint8_t cm2_len;
+			struct gsm48_classmark2 cm2;
+		};
+	};
+	uint8_t mi_len;
+	uint8_t mi[0];
+#endif
 } __attribute__ ((packed));
 
 /* Chapter 10.5.1.3 */
@@ -410,9 +902,15 @@ struct gsm48_loc_area_id {
 
 /* Section 9.2.2 */
 struct gsm48_auth_req {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t key_seq:4,
 	         spare:4;
 	uint8_t rand[16];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t spare:4, key_seq:4;
+	uint8_t rand[16];
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.2.3 */
@@ -422,12 +920,21 @@ struct gsm48_auth_resp {
 
 /* Section 9.2.15 */
 struct gsm48_loc_upd_req {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t type:4,
 		 key_seq:4;
 	struct gsm48_loc_area_id lai;
 	struct gsm48_classmark1 classmark1;
 	uint8_t mi_len;
 	uint8_t mi[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t key_seq:4, type:4;
+	struct gsm48_loc_area_id lai;
+	struct gsm48_classmark1 classmark1;
+	uint8_t mi_len;
+	uint8_t mi[0];
+#endif
 } __attribute__ ((packed));
 
 /* Section 10.1 */
@@ -437,50 +944,119 @@ struct gsm48_hdr {
 	uint8_t data[0];
 } __attribute__ ((packed));
 
+/* Short header */
+struct gsm48_hdr_sh {
+#if OSMO_IS_LITTLE_ENDIAN
+	uint8_t	l2_header:2,	/* < short layer 2 header : bit(2) > See 3GPP TS 44.006 §6.4a */
+		msg_type:5,	/* < message type : bit(5) > See 3GPP TS 44.018 Table 10.4.2 */
+		rr_short_pd:1;	/* < RR short PD : bit > See 3GPP TS 24.007 §11.3.2 */
+	uint8_t data[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	rr_short_pd:1, msg_type:5, l2_header:2;
+	uint8_t data[0];
+#endif
+} __attribute__ ((packed));
+
 /* Section 9.1.3x System information Type header */
 struct gsm48_system_information_type_header {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t l2_plen;
 	uint8_t rr_protocol_discriminator :4,
-		skip_indicator:4; 
+		skip_indicator:4;
 	uint8_t system_information;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t l2_plen;
+	uint8_t skip_indicator:4, rr_protocol_discriminator:4;
+	uint8_t system_information;
+#endif
 } __attribute__ ((packed));
 
-/* Section 10.5.2.4 Cell Selection Parameters */
+/* 3GPP TS 44.018 Section 10.5.2.4 Cell Selection Parameters */
 struct gsm48_cell_sel_par {
-	uint8_t ms_txpwr_max_ccch:5,	/* GSM 05.08 MS-TXPWR-MAX-CCCH */
-		 cell_resel_hyst:3;	/* GSM 05.08 CELL-RESELECT-HYSTERESIS */
-	uint8_t rxlev_acc_min:6,	/* GSM 05.08 RXLEV-ACCESS-MIN */
+#if OSMO_IS_LITTLE_ENDIAN
+	uint8_t ms_txpwr_max_ccch:5,	/* MS-TXPWR-MAX-CCH, 3GPP TS 45.008 MS_TXPWR_MAX_CCH */
+		 cell_resel_hyst:3;	/* CELL-RESELECT-HYSTERESIS, 3GPP TS 45.008 CELL_RESELECT_HYSTERESIS */
+	uint8_t rxlev_acc_min:6,	/* RXLEV-ACCESS-MIN, 3GPP TS 45.008 RXLEV_ACCESS_MIN */
 		 neci:1,
 		 acs:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t cell_resel_hyst:3, ms_txpwr_max_ccch:5;
+	uint8_t acs:1, neci:1, rxlev_acc_min:6;
+#endif
 } __attribute__ ((packed));
 
-/* Section 10.5.2.11 Control Channel Description , Figure 10.5.33 */
+/* 3GPP TS 44.018 Section 10.5.2.11 Control Channel Description */
 struct gsm48_control_channel_descr {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t ccch_conf :3,
 		bs_ag_blks_res :3,
 		att :1,
-		spare1 :1;
+		mscr :1;
 	uint8_t bs_pa_mfrms : 3,
-		spare2 :5;
+		spare_1 :2,
+		cbq3 :2,
+		spare_2 :1;
 	uint8_t t3212;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t mscr:1, att:1, bs_ag_blks_res:3, ccch_conf:3;
+	uint8_t spare_2:1, cbq3:2, spare_1:2, bs_pa_mfrms:3;
+	uint8_t t3212;
+#endif
 } __attribute__ ((packed));
 
+enum gsm48_dtx_mode {
+	GSM48_DTX_MAY_BE_USED,
+	GSM48_DTX_SHALL_BE_USED,
+	GSM48_DTX_SHALL_NOT_BE_USED
+};
+
+/* Cell Options for SI6, SACCH (10.5.2.3a.2) or SI3, BCCH (Table 10.5.2.3.1),
+   3GPP TS 44.018 */
 struct gsm48_cell_options {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t radio_link_timeout:4,
 		 dtx:2,
 		 pwrc:1,
-		 spare:1;
+	/* either DN-IND or top bit of DTX IND */
+		 d:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t d:1, pwrc:1, dtx:2, radio_link_timeout:4;
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.2.9 CM service request */
 struct gsm48_service_request {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t cm_service_type : 4,
 		 cipher_key_seq  : 4;
-	/* length + 3 bytes */
-	uint32_t classmark;
+	union {
+		uint32_t classmark;  /* Backward compatibility */
+		struct {
+			uint8_t cm2_len;
+			struct gsm48_classmark2 classmark2;
+		};
+	};
 	uint8_t mi_len;
 	uint8_t mi[0];
 	/* optional priority level */
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t cipher_key_seq:4, cm_service_type:4;
+	union {
+		uint32_t classmark;
+		struct {
+			uint8_t cm2_len;
+			struct gsm48_classmark2 classmark2;
+		};
+	};
+	uint8_t mi_len;
+	uint8_t mi[0];
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.1.31 System information Type 1 */
@@ -514,6 +1090,12 @@ struct gsm48_system_information_type_2ter {
 	uint8_t rest_octets[0];
 } __attribute__ ((packed));
 
+/* Section 9.1.34a System information Type 2quater */
+struct gsm48_system_information_type_2quater {
+	struct gsm48_system_information_type_header header;
+	uint8_t rest_octets[0];
+} __attribute__ ((packed));
+
 /* Section 9.1.35 System information Type 3 */
 struct gsm48_system_information_type_3 {
 	struct gsm48_system_information_type_header header;
@@ -540,38 +1122,91 @@ struct gsm48_system_information_type_4 {
 
 /* Section 9.1.37 System information Type 5 */
 struct gsm48_system_information_type_5 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t rr_protocol_discriminator :4,
-		skip_indicator:4; 
+		skip_indicator:4;
 	uint8_t system_information;
 	uint8_t bcch_frequency_list[16];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t skip_indicator:4, rr_protocol_discriminator:4;
+	uint8_t system_information;
+	uint8_t bcch_frequency_list[16];
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.1.38 System information Type 5bis */
 struct gsm48_system_information_type_5bis {
+#if OSMO_IS_LITTLE_ENDIAN
         uint8_t rr_protocol_discriminator :4,
 		 skip_indicator:4;
 	uint8_t system_information;
 	uint8_t bcch_frequency_list[16];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+        uint8_t skip_indicator:4, rr_protocol_discriminator:4;
+	uint8_t system_information;
+	uint8_t bcch_frequency_list[16];
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.1.39 System information Type 5ter */
 struct gsm48_system_information_type_5ter {
+#if OSMO_IS_LITTLE_ENDIAN
         uint8_t rr_protocol_discriminator :4,
 		 skip_indicator:4;
 	uint8_t system_information;
 	uint8_t bcch_frequency_list[16];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+        uint8_t skip_indicator:4, rr_protocol_discriminator:4;
+	uint8_t system_information;
+	uint8_t bcch_frequency_list[16];
+#endif
 } __attribute__ ((packed));
 
 /* Section 9.1.40 System information Type 6 */
 struct gsm48_system_information_type_6 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t rr_protocol_discriminator :4,
-		skip_indicator:4; 
+		skip_indicator:4;
 	uint8_t system_information;
 	uint16_t cell_identity;
 	struct gsm48_loc_area_id lai;
 	struct gsm48_cell_options cell_options;
 	uint8_t ncc_permitted;
 	uint8_t rest_octets[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t skip_indicator:4, rr_protocol_discriminator:4;
+	uint8_t system_information;
+	uint16_t cell_identity;
+	struct gsm48_loc_area_id lai;
+	struct gsm48_cell_options cell_options;
+	uint8_t ncc_permitted;
+	uint8_t rest_octets[0];
+#endif
+} __attribute__ ((packed));
+
+/* Section 9.1.50 System Information type 10 (ASCI) */
+struct gsm48_system_information_type_10 {
+#if OSMO_IS_LITTLE_ENDIAN
+	uint8_t	l2_header:2,	/* < short layer 2 header : bit(2) > See 3GPP TS 44.006 §6.4a */
+		msg_type:5,	/* < message type : bit(5) > See 3GPP TS 44.018 Table 10.4.2 */
+		rr_short_pd:1;	/* < RR short PD : bit > See 3GPP TS 24.007 §11.3.2 */
+	uint8_t rest_octets[0];	/* < SI10 Rest Octets : bit(160) > See 3GPP TS 44.018 §10.5.2.44 */
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t	rr_short_pd:1, msg_type:5, l2_header:2;
+	uint8_t rest_octets[0];
+#endif
+} __attribute__ ((packed));
+
+/* TS 44.018 Section 9.1.49 */
+struct gsm0408_vgcs_ul_grant {
+	struct gsm48_hdr hdr;
+	struct gsm48_req_ref req_ref;
+	uint8_t ta;
 } __attribute__ ((packed));
 
 /* Section 9.1.43a System Information type 13 */
@@ -623,10 +1258,15 @@ struct gsm48_chan_rel {
 
 /* Section 9.1.9 */
 struct gsm48_cip_mode_cmd {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t sc:1,
 		 alg_id:3,
 		 cr:1,
 		 spare:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t spare:3, cr:1, alg_id:3, sc:1;
+#endif
 } __attribute__((packed));
 
 /* Section 9.1.11 */
@@ -669,8 +1309,17 @@ struct gsm48_imm_ass_rej {
 	uint8_t rest[0];
 } __attribute__ ((packed));
 
+/* Section 9.1.21b */
+struct gsm48_notification_nch {
+	uint8_t l2_plen;
+	uint8_t proto_discr;
+	uint8_t msg_type;
+	uint8_t data[0];
+} __attribute__((packed));
+
 /* Section 9.1.22 */
 struct gsm48_paging1 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t l2_plen;
 	uint8_t proto_discr;
 	uint8_t msg_type;
@@ -679,10 +1328,19 @@ struct gsm48_paging1 {
 		 cneed1:2,
 		 cneed2:2;
 	uint8_t data[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t l2_plen;
+	uint8_t proto_discr;
+	uint8_t msg_type;
+	uint8_t cneed2:2, cneed1:2, spare:2, pag_mode:2;
+	uint8_t data[0];
+#endif
 } __attribute__((packed));
 
 /* Section 9.1.23 */
 struct gsm48_paging2 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t l2_plen;
 	uint8_t proto_discr;
 	uint8_t msg_type;
@@ -693,10 +1351,21 @@ struct gsm48_paging2 {
 	uint32_t tmsi1;
 	uint32_t tmsi2;
 	uint8_t data[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t l2_plen;
+	uint8_t proto_discr;
+	uint8_t msg_type;
+	uint8_t cneed2:2, cneed1:2, spare:2, pag_mode:2;
+	uint32_t tmsi1;
+	uint32_t tmsi2;
+	uint8_t data[0];
+#endif
 } __attribute__((packed));
 
 /* Section 9.1.24 */
 struct gsm48_paging3 {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t l2_plen;
 	uint8_t proto_discr;
 	uint8_t msg_type;
@@ -712,15 +1381,36 @@ struct gsm48_paging3 {
 		 cneed4:2,
 		 spare2:4;
 	uint8_t rest[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t l2_plen;
+	uint8_t proto_discr;
+	uint8_t msg_type;
+	uint8_t cneed2:2, cneed1:2, spare:2, pag_mode:2;
+	uint32_t tmsi1;
+	uint32_t tmsi2;
+	uint32_t tmsi3;
+	uint32_t tmsi4;
+	uint8_t spare2:4, cneed4:2, cneed3:2;
+	uint8_t rest[0];
+#endif
 } __attribute__((packed));
 
 /* Section 9.1.25 */
 struct gsm48_pag_rsp {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t key_seq:3,
 		 spare:5;
 	uint8_t cm2_len;
 	struct gsm48_classmark2 cm2;
 	uint8_t data[0];
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianness.py) */
+	uint8_t spare:5, key_seq:3;
+	uint8_t cm2_len;
+	struct gsm48_classmark2 cm2;
+	uint8_t data[0];
+#endif
 } __attribute__((packed));
 
 /* Section 9.1.29 */
@@ -728,12 +1418,25 @@ struct gsm48_rr_status {
 	uint8_t rr_cause;
 } __attribute__((packed));
 
-/* Section 10.2 + GSM 04.07 12.2.3.1.1 */
+/* Section 9.1.44 */
+struct gsm48_talker_indication {
+	uint8_t cm2_len;
+	struct gsm48_classmark2 cm2;
+	uint8_t data[0];
+} __attribute__((packed));
+
+/* Section 9.1.48 */
+struct gsm48_uplink_release {
+	uint8_t rr_cause;
+} __attribute__((packed));
+
+/* Section 10.2 + GSM 04.07 12.2.3.1.1 + 3GPP TS 24.007 11.2.3.1.1 */
 #define GSM48_PDISC_GROUP_CC	0x00
 #define GSM48_PDISC_BCAST_CC	0x01
-#define GSM48_PDISC_PDSS1	0x02
+#define GSM48_PDISC_PDSS1	0x02	/* 04.07 only */
 #define GSM48_PDISC_CC		0x03
-#define GSM48_PDISC_PDSS2	0x04
+#define GSM48_PDISC_PDSS2	0x04	/* 04.07 only */
+#define GSM48_PDISC_GTTP	0x04	/* 24.007 only */
 #define GSM48_PDISC_MM		0x05
 #define GSM48_PDISC_RR		0x06
 #define GSM48_PDISC_MM_GPRS	0x08
@@ -741,8 +1444,107 @@ struct gsm48_rr_status {
 #define GSM48_PDISC_SM_GPRS	0x0a
 #define GSM48_PDISC_NC_SS	0x0b
 #define GSM48_PDISC_LOC		0x0c
+#define GSM48_PDISC_EXTEND	0x0e
+#define GSM48_PDISC_TEST	0x0f	/* as per 11.10, 04.14 */
 #define GSM48_PDISC_MASK	0x0f
-#define GSM48_PDISC_USSD	0x11
+
+/* Section 11.3.2.1 3GPP TS 24.007: Short PDISC */
+#define GSM48_PDISC_SH_RR	0
+
+extern const struct value_string gsm48_pdisc_names[];
+static inline const char *gsm48_pdisc_name(uint8_t val)
+{ return get_value_string(gsm48_pdisc_names, val); }
+
+bool gsm48_hdr_gmm_cipherable(const struct gsm48_hdr *hdr);
+
+static inline uint8_t gsm48_hdr_pdisc(const struct gsm48_hdr *hdr)
+{
+	/*
+	 * 3GPP TS 24.007 version 12.0.0 Release 12,
+	 * 11.2.3.1.1 Protocol discriminator
+	 */
+	uint8_t pdisc = hdr->proto_discr & GSM48_PDISC_MASK;
+	if (pdisc == GSM48_PDISC_EXTEND)
+		return hdr->proto_discr;
+	return pdisc;
+}
+
+static inline uint8_t gsm48_hdr_trans_id(const struct gsm48_hdr *hdr)
+{
+	/*
+	 * 3GPP TS 24.007 version 12.0.0 Release 12,
+	 * 11.2.3.1.3 Transaction identifier
+	 */
+	return (hdr->proto_discr & 0xf0) >> 4;
+}
+
+#define GSM48_TA_INVALID 220
+
+/*! Check if TA is valid according to 3GPP TS 44.018 § 10.5.2.40
+ *  \param[in] ta Timing Advance value
+ *  \returns true if ta is valid, false otherwise
+ *  Note: Rules for GSM400 band are ignored as it's not implemented in practice.
+ */
+static inline bool gsm48_ta_is_valid(uint8_t ta)
+{
+	return (ta < 64);
+}
+
+static inline uint8_t gsm48_hdr_trans_id_flip_ti(const struct gsm48_hdr *hdr)
+{
+	return gsm48_hdr_trans_id(hdr) ^ 0x08;
+}
+
+static inline uint8_t gsm48_hdr_trans_id_no_ti(const struct gsm48_hdr *hdr)
+{
+	return gsm48_hdr_trans_id(hdr) & 0x07;
+}
+
+static inline uint8_t gsm48_hdr_msg_type_r98(const struct gsm48_hdr *hdr)
+{
+	/*
+	 * 3GPP TS 24.007 version 12.0.0 Release 12,
+	 * 11.2.3.2.1 Message type octet (when accessing Release 98 and older
+	 * networks only)
+	 */
+	switch (gsm48_hdr_pdisc(hdr)) {
+	case GSM48_PDISC_MM:
+	case GSM48_PDISC_CC:
+	case GSM48_PDISC_NC_SS:
+	case GSM48_PDISC_GROUP_CC:
+	case GSM48_PDISC_BCAST_CC:
+	case GSM48_PDISC_LOC:
+		return hdr->msg_type & 0x3f;
+	default:
+		return hdr->msg_type;
+	}
+}
+
+static inline uint8_t gsm48_hdr_msg_type_r99(const struct gsm48_hdr *hdr)
+{
+	/*
+	 * 3GPP TS 24.007 version 12.0.0 Release 12,
+	 * 11.2.3.2.2 Message type octet (when accessing Release 99 and newer
+	 * networks)
+	 */
+	switch (gsm48_hdr_pdisc(hdr)) {
+	case GSM48_PDISC_MM:
+	case GSM48_PDISC_CC:
+	case GSM48_PDISC_NC_SS:
+		return hdr->msg_type & 0x3f;
+	case GSM48_PDISC_GROUP_CC:
+	case GSM48_PDISC_BCAST_CC:
+	case GSM48_PDISC_LOC:
+		return hdr->msg_type & 0x3f;
+	default:
+		return hdr->msg_type;
+	}
+}
+
+void gsm48_set_dtx(struct gsm48_cell_options *op, enum gsm48_dtx_mode full,
+		   enum gsm48_dtx_mode half, bool is_bcch);
+
+#define gsm48_hdr_msg_type gsm48_hdr_msg_type_r99
 
 /* Section 10.4 */
 #define GSM48_MT_RR_INIT_REQ		0x3c
@@ -750,6 +1552,10 @@ struct gsm48_rr_status {
 #define GSM48_MT_RR_IMM_ASS		0x3f
 #define GSM48_MT_RR_IMM_ASS_EXT		0x39
 #define GSM48_MT_RR_IMM_ASS_REJ		0x3a
+#define GSM48_MT_RR_DTM_ASS_FAIL	0x48
+#define GSM48_MT_RR_DTM_REJECT		0x49
+#define GSM48_MT_RR_DTM_REQUEST		0x4A
+#define GSM48_MT_RR_PACKET_ASS		0x4B
 
 #define GSM48_MT_RR_CIPH_M_CMD		0x35
 #define GSM48_MT_RR_CIPH_M_COMPL	0x32
@@ -765,6 +1571,8 @@ struct gsm48_rr_status {
 #define GSM48_MT_RR_HANDO_COMPL		0x2c
 #define GSM48_MT_RR_HANDO_FAIL		0x28
 #define GSM48_MT_RR_HANDO_INFO		0x2d
+#define GSM48_MT_RR_HANDO_INFO		0x2d
+#define GSM48_MT_RR_DTM_ASS_CMD		0x4c
 
 #define GSM48_MT_RR_CELL_CHG_ORDER	0x08
 #define GSM48_MT_RR_PDCH_ASS_CMD	0x23
@@ -778,8 +1586,13 @@ struct gsm48_rr_status {
 #define GSM48_MT_RR_PAG_REQ_3		0x24
 #define GSM48_MT_RR_PAG_RESP		0x27
 #define GSM48_MT_RR_NOTIF_NCH		0x20
-#define GSM48_MT_RR_NOTIF_FACCH		0x25
+#define GSM48_MT_RR_NOTIF_FACCH		0x25 /* (Reserved) */
 #define GSM48_MT_RR_NOTIF_RESP		0x26
+#define GSM48_MT_RR_PACKET_NOTIF	0x4e
+#define GSM48_MT_RR_UTRAN_CLSM_CHG	0x60
+#define GSM48_MT_RR_CDMA2K_CLSM_CHG	0x62
+#define GSM48_MT_RR_IS_TO_UTRAN_HANDO	0x63
+#define GSM48_MT_RR_IS_TO_CDMA2K_HANDO	0x64
 
 #define GSM48_MT_RR_SYSINFO_8		0x18
 #define GSM48_MT_RR_SYSINFO_1		0x19
@@ -792,6 +1605,7 @@ struct gsm48_rr_status {
 
 #define GSM48_MT_RR_SYSINFO_2bis	0x02
 #define GSM48_MT_RR_SYSINFO_2ter	0x03
+#define GSM48_MT_RR_SYSINFO_2quater	0x07
 #define GSM48_MT_RR_SYSINFO_5bis	0x05
 #define GSM48_MT_RR_SYSINFO_5ter	0x06
 #define GSM48_MT_RR_SYSINFO_9		0x04
@@ -799,6 +1613,15 @@ struct gsm48_rr_status {
 
 #define GSM48_MT_RR_SYSINFO_16		0x3d
 #define GSM48_MT_RR_SYSINFO_17		0x3e
+
+#define GSM48_MT_RR_SYSINFO_18		0x40
+#define GSM48_MT_RR_SYSINFO_19		0x41
+#define GSM48_MT_RR_SYSINFO_20		0x42
+#define GSM48_MT_RR_SYSINFO_13alt	0x44
+#define GSM48_MT_RR_SYSINFO_2n		0x45
+#define GSM48_MT_RR_SYSINFO_21		0x46
+#define GSM48_MT_RR_SYSINFO_22		0x47
+#define GSM48_MT_RR_SYSINFO_23		0x4f
 
 #define GSM48_MT_RR_CHAN_MODE_MODIF	0x10
 #define GSM48_MT_RR_STATUS		0x12
@@ -810,6 +1633,7 @@ struct gsm48_rr_status {
 #define GSM48_MT_RR_EXT_MEAS_REP	0x36
 #define GSM48_MT_RR_EXT_MEAS_REP_ORD	0x37
 #define GSM48_MT_RR_GPRS_SUSP_REQ	0x34
+#define GSM48_MT_RR_DTM_INFO		0x4d
 
 #define GSM48_MT_RR_VGCS_UPL_GRANT	0x09
 #define GSM48_MT_RR_UPLINK_RELEASE	0x0e
@@ -818,6 +1642,21 @@ struct gsm48_rr_status {
 #define GSM48_MT_RR_TALKER_IND		0x11
 
 #define GSM48_MT_RR_APP_INFO		0x38
+
+/* 3GPP TS 44.018 Table 10.4.2 */
+#define GSM48_MT_RR_SH_SI10		0x0
+#define GSM48_MT_RR_SH_FACCH		0x1
+#define GSM48_MT_RR_SH_UL_FREE		0x2
+#define GSM48_MT_RR_SH_MEAS_REP		0x4
+#define GSM48_MT_RR_SH_MEAS_INFO	0x5
+#define GSM48_MT_RR_SH_VGCS_RECON	0x6
+#define GSM48_MT_RR_SH_VGCS_RECON2	0x7
+#define GSM48_MT_RR_SH_VGCS_INFO	0x8
+#define GSM48_MT_RR_SH_VGCS_SMS		0x9
+#define GSM48_MT_RR_SH_SI10bis		0xA
+#define GSM48_MT_RR_SH_SI10ter		0xB
+#define GSM48_MT_RR_SH_VGCS_NEIGH	0xC
+#define GSM48_MT_RR_SH_APP_DATA		0xD
 
 /* Table 10.2/3GPP TS 04.08 */
 #define GSM48_MT_MM_IMSI_DETACH_IND	0x01
@@ -828,6 +1667,7 @@ struct gsm48_rr_status {
 #define GSM48_MT_MM_AUTH_REJ		0x11
 #define GSM48_MT_MM_AUTH_REQ		0x12
 #define GSM48_MT_MM_AUTH_RESP		0x14
+#define GSM48_MT_MM_AUTH_FAIL		0x1c
 #define GSM48_MT_MM_ID_REQ		0x18
 #define GSM48_MT_MM_ID_RESP		0x19
 #define GSM48_MT_MM_TMSI_REALL_CMD	0x1a
@@ -885,16 +1725,30 @@ struct gsm48_rr_status {
 #define GSM48_MT_CC_START_DTMF_REJ	0x37
 #define GSM48_MT_CC_FACILITY		0x3a
 
+extern const struct value_string gsm48_rr_msgtype_names[];
+extern const struct value_string gsm48_mm_msgtype_names[];
+extern const struct value_string gsm48_cc_msgtype_names[];
+const char *gsm48_pdisc_msgtype_name(uint8_t pdisc, uint8_t msg_type);
+char *gsm48_pdisc_msgtype_name_buf(char *buf, size_t buf_len, uint8_t pdisc, uint8_t msg_type);
+char *gsm48_pdisc_msgtype_name_c(const void *ctx, uint8_t pdisc, uint8_t msg_type);
+
 /* FIXME: Table 10.4 / 10.4a (GPRS) */
 
 /* Section 10.5.3.3 CM service type */
-#define GSM48_CMSERV_MO_CALL_PACKET	1
-#define GSM48_CMSERV_EMERGENCY		2
-#define GSM48_CMSERV_SMS		4
-#define GSM48_CMSERV_SUP_SERV		8
-#define GSM48_CMSERV_VGCS		9
-#define GSM48_CMSERV_VBS		10
-#define GSM48_CMSERV_LOC_SERV		11
+enum osmo_cm_service_type {
+	GSM48_CMSERV_MO_CALL_PACKET	= 1,
+	GSM48_CMSERV_EMERGENCY		= 2,
+	GSM48_CMSERV_SMS		= 4,
+	GSM48_CMSERV_SUP_SERV		= 8,
+	GSM48_CMSERV_VGCS		= 9,
+	GSM48_CMSERV_VBS		= 10,
+	GSM48_CMSERV_LOC_SERV		= 11,
+	GSM48_CMSERV_MAX_VAL		= GSM48_CMSERV_LOC_SERV
+};
+
+extern const struct value_string osmo_cm_service_type_names[];
+static inline const char *osmo_cm_service_type_name(enum osmo_cm_service_type val)
+{ return get_value_string(osmo_cm_service_type_names, val); }
 
 /* Section 10.5.2.26, Table 10.5.64 */
 #define GSM48_PM_MASK		0x03
@@ -908,6 +1762,10 @@ struct gsm48_rr_status {
 #define GSM48_LUPD_PERIODIC	0x1
 #define GSM48_LUPD_IMSI_ATT	0x2
 #define GSM48_LUPD_RESERVED	0x3
+
+extern const struct value_string osmo_lu_type_names[];
+static inline const char *osmo_lu_type_name(uint8_t lu_type)
+{ return get_value_string(osmo_lu_type_names, lu_type); }
 
 /* Table 10.5.4 */
 #define GSM_MI_TYPE_MASK	0x07
@@ -965,6 +1823,10 @@ struct gsm48_rr_status {
 #define GSM48_IE_FRQSHORT_AFTER	0x02
 #define GSM48_IE_MUL_RATE_CFG	0x03	/* 10.5.2.21aa */
 #define GSM48_IE_FREQ_L_AFTER	0x05
+#define GSM48_IE_GROUP_CIP_SEQ_HO 0x08 /* HO = Half Octet Tag */
+#define GSM48_IE_CIP_MODE_SET_HO 0x09 /* HO = Half Octet Tag */
+#define GSM48_IE_GPRS_RESUMPT_HO 0xc0 /* HO = Half Octet Tag */
+#define GSM48_IE_SYNC_IND_HO	0x0d /* HO = Half Octet Tag */
 #define GSM48_IE_MSLOT_DESC	0x10
 #define GSM48_IE_CHANMODE_2	0x11
 #define GSM48_IE_FRQSHORT_BEFORE 0x12
@@ -995,27 +1857,46 @@ struct gsm48_rr_status {
 #define GSM48_IE_CHDES_2_AFTER	0x64
 #define GSM48_IE_MODE_SEC_CH	0x66
 #define GSM48_IE_F_CH_SEQ_AFTER	0x69
+#define GSM48_IE_EXTENDED_TSC_SET	0x6d
 #define GSM48_IE_MA_AFTER	0x72
 #define GSM48_IE_BA_RANGE	0x73
 #define GSM48_IE_GROUP_CHDES	0x74
 #define GSM48_IE_BA_LIST_PREF	0x75
 #define GSM48_IE_MOB_OVSERV_DIF	0x77
+#define GSM48_IE_CELL_SEL_IND_AFTER_REL	0x77 /* 44.018 Section 9.1.7 */
 #define GSM48_IE_REALTIME_DIFF	0x7b
 #define GSM48_IE_START_TIME	0x7c
+#define GSM48_IE_INDIVIDUAL_PRIORITIES 0x7c /* 44.018 Section 9.1.7 */
 #define GSM48_IE_TIMING_ADVANCE	0x7d
-#define GSM48_IE_GROUP_CIP_SEQ	0x80
-#define GSM48_IE_CIP_MODE_SET	0x90
-#define GSM48_IE_GPRS_RESUMPT	0xc0
-#define GSM48_IE_SYNC_IND	0xd0
+#define GSM48_IE_GROUP_CIP_SEQ 0x80 /* DEPRECATED, use GSM48_IE_GROUP_CIP_SEQ_HO instead */
+#define GSM48_IE_CIP_MODE_SET  0x90  /* DEPRECATED, use GSM48_IE_CIP_MODE_SET_HO instead */
+#define GSM48_IE_GPRS_RESUMPT  0xc0 /* DEPRECATED, use GSM48_IE_GPRS_RESUMPT_HO instead */
+#define GSM48_IE_SYNC_IND      0xd0 /* DEPRECATED, use GSM48_IE_SYNC_IND_HO instead */
 /* System Information 4 (types are equal IEs above) */
 #define GSM48_IE_CBCH_CHAN_DESC	0x64
 #define GSM48_IE_CBCH_MOB_AL	0x72
 
 /* Additional MM elements */
+#define GSM48_IE_PRIORITY_LEV_HO 0x08 /* HO = Half Octet Tag */
 #define GSM48_IE_LOCATION_AREA	0x13
-#define GSM48_IE_PRIORITY_LEV	0x80
+#define GSM48_IE_AUTN		0x20
+#define GSM48_IE_AUTH_RES_EXT	0x21
+#define GSM48_IE_AUTS		0x22
+#define GSM48_IE_PRIORITY_LEV	0x80 /* DEPRECATED, use GSM48_IE_PRIORITY_LEV_HO instead */
 #define GSM48_IE_FOLLOW_ON_PROC	0xa1
 #define GSM48_IE_CTS_PERMISSION	0xa2
+
+/* Section 10.5.4.21 / Table 10.5.127 */
+
+enum gsm48_progress_desc {
+	GSM48_PROGR_NOT_E2E		= 0x00,
+	GSM48_PROGR_DEST_NOT_PLMN	= 0x02,
+	GSM48_PROGR_ORIG_NOT_PLMN	= 0x03,
+	GSM48_PROGR_RETURNED		= 0x04,
+	GSM48_PROGR_IN_BAND_AVAIL	= 0x08,
+	GSM48_PROGR_CALL_E2E		= 0x20,
+	GSM48_PROGR_QUEUEING		= 0x40,
+};
 
 /* Section 10.5.4.23 / Table 10.5.130 */
 enum gsm48_signal_val {
@@ -1032,6 +1913,14 @@ enum gsm48_signal_val {
 	GSM48_SIGNAL_ALERT_OFF	= 0x4f,
 };
 
+/* Section 10.5.4.11 / Table 10.5.122 */
+enum gsm48_cause_coding {
+	GSM48_CAUSE_CODING_CCITT_Q931	= 0x00,
+	GSM48_CAUSE_CODING_RESERVED	= 0x01,
+	GSM48_CAUSE_CODING_NATIONAL	= 0x02,
+	GSM48_CAUSE_CODING_GSM		= 0x03,
+};
+
 enum gsm48_cause_loc {
 	GSM48_CAUSE_LOC_USER		= 0x00,
 	GSM48_CAUSE_LOC_PRN_S_LU	= 0x01,
@@ -1044,7 +1933,7 @@ enum gsm48_cause_loc {
 	GSM48_CAUSE_LOC_NET_BEYOND	= 0x0a,
 };
 
-/* Section 10.5.2.31 RR Cause / Table 10.5.70 */
+/* 3GPP TS 44.018 10.5.2.31 RR Cause / Table 10.5.70 */
 enum gsm48_rr_cause {
 	GSM48_RR_CAUSE_NORMAL		= 0x00,
 	GSM48_RR_CAUSE_ABNORMAL_UNSPEC	= 0x01,
@@ -1052,9 +1941,12 @@ enum gsm48_rr_cause {
 	GSM48_RR_CAUSE_ABNORMAL_TIMER	= 0x03,
 	GSM48_RR_CAUSE_ABNORMAL_NOACT	= 0x04,
 	GSM48_RR_CAUSE_PREMPTIVE_REL	= 0x05,
+	GSM48_RR_CAUSE_UTRAN_CFG_UNK	= 0x06,
 	GSM48_RR_CAUSE_HNDOVER_IMP	= 0x08,
 	GSM48_RR_CAUSE_CHAN_MODE_UNACCT	= 0x09,
 	GSM48_RR_CAUSE_FREQ_NOT_IMPL	= 0x0a,
+	GSM48_RR_CAUSE_LEAVE_GROUP_CA	= 0x0b,
+	GSM48_RR_CAUSE_LOW_LEVEL_FAIL	= 0x0c,
 	GSM48_RR_CAUSE_CALL_CLEARED	= 0x41,
 	GSM48_RR_CAUSE_SEMANT_INCORR	= 0x5f,
 	GSM48_RR_CAUSE_INVALID_MAND_INF = 0x60,
@@ -1118,6 +2010,10 @@ enum gsm48_cc_cause {
 	GSM48_CC_CAUSE_INTERWORKING	= 127,
 };
 
+extern const struct value_string gsm48_cc_cause_names[];
+static inline const char *gsm48_cc_cause_name(enum gsm48_cc_cause val)
+{ return get_value_string(gsm48_cc_cause_names, val); }
+
 /* Annex G, GSM specific cause values for mobility management */
 enum gsm48_reject_value {
 	GSM48_REJECT_IMSI_UNKNOWN_IN_HLR	= 2,
@@ -1128,8 +2024,13 @@ enum gsm48_reject_value {
 	GSM48_REJECT_PLMN_NOT_ALLOWED		= 11,
 	GSM48_REJECT_LOC_NOT_ALLOWED		= 12,
 	GSM48_REJECT_ROAMING_NOT_ALLOWED	= 13,
+	GSM48_REJECT_NO_SUIT_CELL_IN_LA		= 15,
 	GSM48_REJECT_NETWORK_FAILURE		= 17,
+	GSM48_REJECT_MAC_FAILURE		= 20,
+	GSM48_REJECT_SYNCH_FAILURE		= 21,
 	GSM48_REJECT_CONGESTION			= 22,
+	GSM48_REJECT_GSM_AUTH_UNACCEPTABLE	= 23,
+	GSM48_REJECT_NOT_AUTH_FOR_CSG		= 25,
 	GSM48_REJECT_SRV_OPT_NOT_SUPPORTED	= 32,
 	GSM48_REJECT_RQD_SRV_OPT_NOT_SUPPORTED	= 33,
 	GSM48_REJECT_SRV_OPT_TMP_OUT_OF_ORDER	= 34,
@@ -1150,7 +2051,13 @@ enum gsm48_reject_value {
 	GSM48_REJECT_IMPLICITLY_DETACHED	= 10,
 	GSM48_REJECT_GPRS_NOT_ALLOWED_IN_PLMN	= 14,
 	GSM48_REJECT_MSC_TMP_NOT_REACHABLE	= 16,
+	GSM48_REJECT_SMS_PROV_VIA_GPRS_IN_RA	= 28,
+	GSM48_REJECT_NO_PDP_CONTEXT_ACTIVATED	= 40,
 };
+
+extern const struct value_string gsm48_reject_value_names[];
+static inline const char *gsm48_reject_value_name(enum gsm48_reject_value val)
+{ return get_value_string(gsm48_reject_value_names, val); }
 
 enum chreq_type {
 	CHREQ_T_EMERG_CALL,
@@ -1169,6 +2076,9 @@ enum chreq_type {
 	CHREQ_T_LMU,
 	CHREQ_T_RESERVED_SDCCH,
 	CHREQ_T_RESERVED_IGNORE,
+	CHREQ_T_PDCH_ONE_PHASE,
+	CHREQ_T_PDCH_TWO_PHASE,
+	_NUM_CHREQ_T,
 };
 
 /* Chapter 11.3 */
@@ -1176,14 +2086,14 @@ enum chreq_type {
 #define GSM48_T303	30, 0
 #define GSM48_T305	30, 0
 #define GSM48_T306	30, 0
-#define GSM48_T308	10, 0
-#define GSM48_T310	180, 0
-#define GSM48_T313	30, 0
+#define GSM48_T308	10, 0		/* no spec default */
+#define GSM48_T310	30, 0		/* no spec default */
+#define GSM48_T313	30, 0		/* no spec default */
 #define GSM48_T323	30, 0
-#define GSM48_T331	30, 0
-#define GSM48_T333	30, 0
-#define GSM48_T334	25, 0 /* min 15 */
-#define GSM48_T338	30, 0
+#define GSM48_T331	30, 0		/* no spec default */
+#define GSM48_T333	30, 0		/* no spec default */
+#define GSM48_T334	25, 0 /* min 15s */
+#define GSM48_T338	30, 0		/* no spec default */
 #define GSM48_T303_MS	30, 0
 #define GSM48_T305_MS	30, 0
 #define GSM48_T308_MS	30, 0
@@ -1244,6 +2154,9 @@ enum gsm48_bcap_rrq {
 	GSM48_BCAP_RRQ_FR_ONLY	= 1,
 	GSM48_BCAP_RRQ_DUAL_HR	= 2,
 	GSM48_BCAP_RRQ_DUAL_FR	= 3,
+/* GSM 04.08 Table 10.72: In network to MS direction, the network must send
+ * spare bits that are encoded the same as FR_ONLY. */
+#define GSM48_BCAP_RRQ_SPARE_NETWORK_TO_MS GSM48_BCAP_RRQ_FR_ONLY
 };
 
 /* GSM 04.08 Bearer Capability: Rate Adaption */
@@ -1311,20 +2224,48 @@ enum gsm48_bcap_modem_type {
 	GSM48_BCAP_MT_AUTO_1	= 8,
 };
 
-/* GSM 04.08 Bearer Capability: Speech Version Indication */
+/*! Table 10.5.112/3GPP TS 24.008: Other modem type (octet 6d) */
+enum gsm48_bcap_other_modem_type {
+	GSM48_BCAP_OTHER_MT_NONE	= 0,	/*!< No other modem type specified */
+	GSM48_BCAP_OTHER_MT_V34		= 2,	/*!< According to ITU-T Rec. V.34 */
+};
+
+/*! Table 10.5.112/3GPP TS 24.008: Fixed network user rate (octet 6d) */
+enum gsm48_bcap_fixed_net_user_rate {
+	GSM48_BCAP_FNUR_NONE		= 0,	/*!< FNUR not applicable / No meaning associated */
+	GSM48_BCAP_FNUR_X1_V110_9600	= 1,	/*!< 9.6 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_14400	= 2,	/*!< 14.4 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_19200	= 3,	/*!< 19.2 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_28800	= 4,	/*!< 28.8 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_38400	= 5,	/*!< 38.4 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_48000	= 6,	/*!< 48.0 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_X1_V110_56000	= 7,	/*!< 56.0 kbit/s (according to ITU-T Rec. X.1 and V.110) */
+	GSM48_BCAP_FNUR_BT_64000	= 8,	/*!< 64.0 kbit/s bit transparent */
+	GSM48_BCAP_FNUR_BT_33600	= 9,	/*!< 33.6 kbit/s bit transparent */
+	GSM48_BCAP_FNUR_I460_32000	= 10,	/*!< 32.0 kbit/s (according to ITU-T Rec. I.460) */
+	GSM48_BCAP_FNUR_V34_31200	= 11,	/*!< 31.2 kbit/s (according to ITU-T Rec. V.34) */
+};
+
+/*! GSM 04.08 Bearer Capability: Speech Version Indication
+ *  (See also 3GPP TS 24.008, Table 10.5.103
+ *  and 3GPP TS 26.103, Table 4.1 "Support of Codec Types in Radio Access Technologies") */
 enum gsm48_bcap_speech_ver {
-	GSM48_BCAP_SV_FR	= 0,
-	GSM48_BCAP_SV_HR	= 1,
-	GSM48_BCAP_SV_EFR	= 2,
-	GSM48_BCAP_SV_AMR_F	= 4,
-	GSM48_BCAP_SV_AMR_H	= 5,
+	GSM48_BCAP_SV_FR	= 0,	/*!< GSM FR V1 (GSM FR) */
+	GSM48_BCAP_SV_HR	= 1,	/*!< GSM HR V1 (GSM HR) */
+	GSM48_BCAP_SV_EFR	= 2,	/*!< GSM FR V2 (GSM EFR) */
+	GSM48_BCAP_SV_AMR_F	= 4,	/*!< GSM FR V3 (FR AMR) */
+	GSM48_BCAP_SV_AMR_H	= 5,	/*!< GSM HR V3 (HR_AMR) */
+	GSM48_BCAP_SV_AMR_OFW	= 6,	/*!< GSM FR V4 (OFR AMR-WB) */
+	GSM48_BCAP_SV_AMR_OHW	= 7,	/*!< GSM HR V4 (OHR AMR-WB) */
+	GSM48_BCAP_SV_AMR_FW	= 8,	/*!< GSM FR V5 (FR AMR-WB) */
+	GSM48_BCAP_SV_AMR_OH	= 11,	/*!< GSM HR V6 (OHR AMR) */
 };
 
 #define GSM48_TMSI_LEN	5
 #define GSM48_MID_TMSI_LEN	(GSM48_TMSI_LEN + 2)
 #define GSM48_MI_SIZE 32
 
-/* Chapter 10.4.4.15 */
+/* 3GPP TS 24.008 § 10.5.5.15 Routing area identification */
 struct gsm48_ra_id {
 	uint8_t digits[3];	/* MCC + MNC BCD digits */
 	uint16_t lac;		/* Location Area Code */
@@ -1335,3 +2276,25 @@ struct gsm48_ra_id {
 
 #define GSM_MACBLOCK_LEN	23
 #define GSM_MACBLOCK_PADDING	0x2b
+
+/* Table 10.5.118 / 3GPP TS 24.008 Section 10.5.4.7 */
+enum gsm48_type_of_number {
+	GSM48_TON_UNKNOWN	= 0,
+	GSM48_TON_INTERNATIONAL	= 1,
+	GSM48_TON_NATIONAL	= 2,
+	GSM48_TON_NET_SPEC	= 3,
+	GSM48_TON_SHORT_CODE	= 4,
+	/* reserved */
+};
+
+/* Table 10.5.118 / 3GPP TS 24.008 Section 10.5.4.7 */
+enum gsm48_numbering_plan {
+	GSM48_NPI_UNKNOWN	= 0,
+	GSM48_NPI_ISDN_E164	= 1,
+	GSM48_NPI_DATA_X121	= 3,
+	GSM48_NPI_TELEX_F69	= 4,
+	GSM48_NPI_NATIONAL	= 8,
+	GSM48_NPI_PRIVATE	= 9,
+	GSM48_NPI_CTS		= 11,
+	/* reserved */
+};

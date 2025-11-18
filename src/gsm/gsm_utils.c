@@ -1,3 +1,4 @@
+/*! \file gsm_utils.c */
 /*
  * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
  * (C) 2009,2013 by Holger Hans Peter Freyther <zecke@selfish.org>
@@ -5,6 +6,8 @@
  * (C) 2010-2012 by Nico Golde <nico@ngolde.de>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,10 +18,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -41,6 +40,12 @@
  * routines in libosmogsm are not thread-safe.  If you must use them in
  * a multi-threaded context, you have to add your own locking.
  *
+ * libosmogsm is developed as part of the Osmocom (Open Source Mobile
+ * Communications) project, a community-based, collaborative development
+ * project to create Free and Open Source implementations of mobile
+ * communications systems.  For more information about Osmocom, please
+ * see https://osmocom.org/
+ *
  * \section sec_copyright Copyright and License
  * Copyright © 2008-2011 - Harald Welte, Holger Freyther and contributors\n
  * All rights reserved. \n\n
@@ -55,6 +60,13 @@
  * FITNESS FOR A PARTICULAR PURPOSE.
  * \n\n
  *
+ * \section sec_tracker Homepage + Issue Tracker
+ * libosmogsm is distributed as part of libosmocore and shares its
+ * project page at http://osmocom.org/projects/libosmocore
+ *
+ * An Issue Tracker can be found at
+ * https://osmocom.org/projects/libosmocore/issues
+ *
  * \section sec_contact Contact and Support
  * Community-based support is available at the OpenBSC mailing list
  * <http://lists.osmocom.org/mailman/listinfo/openbsc>\n
@@ -64,16 +76,69 @@
 
 //#include <openbsc/gsm_data.h>
 #include <osmocom/core/utils.h>
+#include <osmocom/core/bitvec.h>
 #include <osmocom/gsm/gsm_utils.h>
+#include <osmocom/gsm/meas_rep.h>
+#include <osmocom/gsm/protocol/gsm_04_08.h>
+#include <osmocom/gsm/gsm0502.h>
 
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
 #include <ctype.h>
+#include <inttypes.h>
+#include <time.h>
+#include <unistd.h>
 
-#include "../../config.h"
+#include "config.h"
+
+#if (!EMBEDDED)
+/* FIXME: this can be removed once we bump glibc requirements to 2.25: */
+#ifdef __GLIBC_PREREQ
+#if __GLIBC_PREREQ(2,25)
+#define HAVE_GLIBC_GETRANDOM
+#endif /* if __GLIBC_PREREQ(2,25) */
+#endif /* ifdef __GLIBC_PREREQ */
+#ifdef HAVE_GLIBC_GETRANDOM
+#pragma message ("glibc " OSMO_STRINGIFY_VAL(__GLIBC__) "." OSMO_STRINGIFY_VAL(__GLIBC_MINOR__) " random detected")
+#include <sys/random.h>
+#undef USE_GNUTLS
+#elif HAVE_DECL_SYS_GETRANDOM
+#include <sys/syscall.h>
+#ifndef GRND_NONBLOCK
+#define GRND_NONBLOCK 0x0001
+#endif /* ifndef GRND_NONBLOCK */
+#endif /* ifdef HAVE_GLIBC_GETRANDOM */
+#endif /* !EMBEDDED */
+
+#if (USE_GNUTLS)
+#pragma message ("including GnuTLS for getrandom fallback.")
+#include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
+
+/* gnutls < 3.3.0 requires global init.
+ * gnutls >= 3.3.0 does it automatic.
+ * It doesn't hurt calling it twice,
+ * as long it's not done at the same time (threads).
+ */
+__attribute__((constructor))
+static void on_dso_load_gnutls(void)
+{
+	if (!gnutls_check_version("3.3.0"))
+		gnutls_global_init();
+}
+
+__attribute__((destructor))
+static void on_dso_unload_gnutls(void)
+{
+	if (!gnutls_check_version("3.3.0"))
+		gnutls_global_deinit();
+}
+
+#endif /* if (USE_GNUTLS) */
 
 /* ETSI GSM 03.38 6.2.1 and 6.2.1.1 default alphabet
  * Greek symbols at hex positions 0x10 and 0x12-0x1a
@@ -117,7 +182,10 @@ static int gsm_septet_lookup(uint8_t ch)
 	return -1;
 }
 
-/* Compute the number of octets from the number of septets, for instance: 47 septets needs 41,125 = 42 octets */
+/*! Compute number of octets from number of septets.
+ * For instance: 47 septets need 41,125 = 42 octets.
+ * \param[in] sept_len Number of septets
+ * \returns Number of octets required */
 uint8_t gsm_get_octet_len(const uint8_t sept_len){
 	int octet_len = (sept_len * 7) / 8;
 	if ((sept_len * 7) % 8 != 0)
@@ -126,16 +194,20 @@ uint8_t gsm_get_octet_len(const uint8_t sept_len){
 	return octet_len;
 }
 
-/* GSM 03.38 6.2.1 Character unpacking */
+/*! TS 03.38 7-bit Character unpacking (6.2.1)
+ *  \param[out] text Caller-provided output text buffer
+ *  \param[in] n Length of \a text
+ *  \param[in] user_data Input Data (septets)
+ *  \param[in] septet_l Number of septets in \a user_data
+ *  \param[in] ud_hdr_ind User Data Header present in data
+ *  \returns number of bytes written to \a text */
 int gsm_7bit_decode_n_hdr(char *text, size_t n, const uint8_t *user_data, uint8_t septet_l, uint8_t ud_hdr_ind)
 {
-	int i = 0;
-	int shift = 0;
-	uint8_t c7, c8;
-	uint8_t next_is_ext = 0;
+	unsigned shift = 0;
+	uint8_t c7, c8, next_is_ext = 0, lu, ru;
+	const uint8_t maxlen = gsm_get_octet_len(septet_l);
 	const char *text_buf_begin = text;
 	const char *text_buf_end = text + n;
-	int nchars;
 
 	OSMO_ASSERT (n > 0);
 
@@ -148,12 +220,24 @@ int gsm_7bit_decode_n_hdr(char *text, size_t n, const uint8_t *user_data, uint8_
 		septet_l = septet_l - shift;
 	}
 
+	unsigned i, l, r;
 	for (i = 0; i < septet_l && text != text_buf_end - 1; i++) {
-		c7 =
-			((user_data[((i + shift) * 7 + 7) >> 3] <<
-			  (7 - (((i + shift) * 7 + 7) & 7))) |
-			 (user_data[((i + shift) * 7) >> 3] >>
-			  (((i + shift) * 7) & 7))) & 0x7f;
+
+		l = ((i + shift) * 7 + 7) >> 3;
+		r = ((i + shift) * 7) >> 3;
+
+		/* the left side index is always >= right side index
+		sometimes it even gets beyond array boundary
+		check for that explicitly and force 0 instead
+		 */
+		if (l >= maxlen)
+			lu = 0;
+		else
+			lu = user_data[l] << (7 - (((i + shift) * 7 + 7) & 7));
+
+		ru = user_data[r] >> (((i + shift) * 7) & 7);
+
+		c7 = (lu | ru) & 0x7f;
 
 		if (next_is_ext) {
 			/* this is an extension character */
@@ -169,18 +253,18 @@ int gsm_7bit_decode_n_hdr(char *text, size_t n, const uint8_t *user_data, uint8_
 		*(text++) = c8;
 	}
 
-	nchars = text - text_buf_begin;
-
 	*text = '\0';
 
-	return nchars;
+	return text - text_buf_begin;
 }
 
+/*! Decode 7bit GSM Alphabet */
 int gsm_7bit_decode_n(char *text, size_t n, const uint8_t *user_data, uint8_t septet_l)
 {
 	return gsm_7bit_decode_n_hdr(text, n, user_data, septet_l, 0);
 }
 
+/*! Decode 7bit GSM Alphabet (USSD) */
 int gsm_7bit_decode_n_ussd(char *text, size_t n, const uint8_t *user_data, uint8_t length)
 {
 	int nchars;
@@ -193,7 +277,15 @@ int gsm_7bit_decode_n_ussd(char *text, size_t n, const uint8_t *user_data, uint8
 	return nchars;
 }
 
-/* GSM 03.38 6.2.1 Prepare character packing */
+/*! Encode a ASCII characterrs as 7-bit GSM alphabet (TS 03.38)
+ *
+ *  This function converts a zero-terminated input string \a data from
+ *  ASCII into octet-aligned 7-bit GSM characters. No packing is
+ *  performed.
+ *
+ *  \param[out] result caller-allocated output buffer
+ *  \param[in] data input data, ASCII
+ *  \returns number of octets used in \a result */
 int gsm_septet_encode(uint8_t *result, const char *data)
 {
 	int i, y = 0;
@@ -212,6 +304,7 @@ int gsm_septet_encode(uint8_t *result, const char *data)
 		case 0x5d:
 		case 0x7c:
 			result[y++] = 0x1b;
+		/* fall-through */
 		default:
 			result[y] = gsm_7bit_alphabet[ch];
 			break;
@@ -222,18 +315,24 @@ int gsm_septet_encode(uint8_t *result, const char *data)
 	return y;
 }
 
-/* 7bit to octet packing */
-int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len, uint8_t padding)
+/*! GSM Default Alphabet 7bit to octet packing
+ *  \param[out] result Caller-provided output buffer
+ *  \param[in] rdata Input data septets
+ *  \param[in] septet_len Length of \a rdata
+ *  \param[in] padding padding bits at start
+ *  \returns number of bytes used in \a result */
+int gsm_septet_pack(uint8_t *result, const uint8_t *rdata, size_t septet_len, uint8_t padding)
 {
 	int i = 0, z = 0;
 	uint8_t cb, nb;
 	int shift = 0;
-	uint8_t *data = calloc(septet_len + 1, sizeof(uint8_t));
+	uint8_t *data = malloc(septet_len + 1);
 
 	if (padding) {
 		shift = 7 - padding;
 		/* the first zero is needed for padding */
 		memcpy(data + 1, rdata, septet_len);
+		data[0] = 0x00;
 		septet_len++;
 	} else
 		memcpy(data, rdata, septet_len);
@@ -268,7 +367,18 @@ int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len
 	return z;
 }
 
-/* GSM 03.38 6.2.1 Character packing */
+/*! Backwards compatibility wrapper for gsm_septets_pack(), deprecated. */
+int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len, uint8_t padding)
+{
+	return gsm_septet_pack(result, rdata, septet_len, padding);
+}
+
+/*! GSM 7-bit alphabet TS 03.38 6.2.1 Character packing
+ *  \param[out] result Caller-provided output buffer
+ *  \param[in] n Maximum length of \a result in bytes
+ *  \param[in] data octet-aligned string
+ *  \param[out] octets Number of octets encoded
+ *  \returns number of septets encoded */
 int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets)
 {
 	int y = 0;
@@ -276,7 +386,7 @@ int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets)
 	size_t max_septets = n * 8 / 7;
 
 	/* prepare for the worst case, every character expanding to two bytes */
-	uint8_t *rdata = calloc(strlen(data) * 2, sizeof(uint8_t));
+	uint8_t *rdata = malloc(strlen(data) * 2);
 	y = gsm_septet_encode(rdata, data);
 
 	if (y > max_septets) {
@@ -287,7 +397,7 @@ int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets)
 		y = max_septets;
 	}
 
-	o = gsm_septets2octets(result, rdata, y, 0);
+	o = gsm_septet_pack(result, rdata, y, 0);
 
 	if (octets)
 		*octets = o;
@@ -307,6 +417,12 @@ int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets)
 	return y;
 }
 
+/*! Encode according to GSM 7-bit alphabet (TS 03.38 6.2.1) for USSD
+ *  \param[out] result Caller-provided output buffer
+ *  \param[in] n Maximum length of \a result in bytes
+ *  \param[in] data octet-aligned string
+ *  \param[out] octets Number of octets encoded
+ *  \returns number of septets encoded */
 int gsm_7bit_encode_n_ussd(uint8_t *result, size_t n, const char *data, int *octets)
 {
 	int y;
@@ -325,8 +441,72 @@ int gsm_7bit_encode_n_ussd(uint8_t *result, size_t n, const char *data, int *oct
 	return y;
 }
 
-/* convert power class to dBm according to GSM TS 05.05 */
-unsigned int ms_class_gmsk_dbm(enum gsm_band band, int class)
+/*! Generate random identifier
+ *  We use /dev/urandom (default when GRND_RANDOM flag is not set).
+ *  Both /dev/(u)random numbers are coming from the same CSPRNG anyway (at least on GNU/Linux >= 4.8).
+ *  See also RFC4086.
+ *  \param[out] out Buffer to be filled with random data
+ *  \param[in] len Number of random bytes required
+ *  \returns 0 on success, or a negative error code on error.
+ */
+int osmo_get_rand_id(uint8_t *out, size_t len)
+{
+	int rc = -ENOTSUP;
+
+	/* this function is intended for generating short identifiers only, not arbitrary-length random data */
+	if (len > OSMO_MAX_RAND_ID_LEN)
+               return -E2BIG;
+#if (!EMBEDDED)
+#ifdef HAVE_GLIBC_GETRANDOM
+	rc = getrandom(out, len, GRND_NONBLOCK);
+#elif HAVE_DECL_SYS_GETRANDOM
+#pragma message ("Using direct syscall access for getrandom(): consider upgrading to glibc >= 2.25")
+	/* FIXME: this can be removed once we bump glibc requirements to 2.25: */
+	rc = syscall(SYS_getrandom, out, len, GRND_NONBLOCK);
+#endif
+#endif /* !EMBEDDED */
+
+	/* getrandom() failed entirely: */
+	if (rc < 0) {
+#if (USE_GNUTLS)
+		return gnutls_rnd(GNUTLS_RND_RANDOM, out, len);
+#else
+		return -errno;
+#endif
+	}
+
+	/* getrandom() failed partially due to signal interruption:
+	   this should never happen (according to getrandom(2)) as long as OSMO_MAX_RAND_ID_LEN < 256
+	   because we do not set GRND_RANDOM but it's better to be paranoid and check anyway */
+	if (rc != len)
+               return -EAGAIN;
+
+	return 0;
+}
+
+/*! Build the RSL uplink measurement IE (3GPP TS 08.58 § 9.3.25)
+ *  \param[in] mru Unidirectional measurement report structure
+ *  \param[in] dtxd_used Indicates if DTXd was used during measurement report
+ *             period
+ *  \param[out] buf Pre-allocated bufer for storing IE
+ *  \returns Number of bytes filled in buf
+ */
+size_t gsm0858_rsl_ul_meas_enc(const struct gsm_meas_rep_unidir *mru, bool dtxd_used,
+			uint8_t *buf)
+{
+	buf[0] = dtxd_used ? (1 << 6) : 0;
+	buf[0] |= (mru->full.rx_lev & 0x3f);
+	buf[1] = (mru->sub.rx_lev & 0x3f);
+	buf[2] = ((mru->full.rx_qual & 7) << 3) | (mru->sub.rx_qual & 7);
+
+	return 3;
+}
+
+/*! Convert power class to dBm according to GSM TS 05.05
+ *  \param[in] band GSM frequency band
+ *  \param[in] class GSM power class
+ *  \returns maximum transmit power of power class in dBm, negative on error */
+int ms_class_gmsk_dbm(enum gsm_band band, int class)
 {
 	switch (band) {
 	case GSM_BAND_450:
@@ -366,8 +546,11 @@ unsigned int ms_class_gmsk_dbm(enum gsm_band band, int class)
 	return -EINVAL;
 }
 
-/* determine power control level for given dBm value, as indicated
- * by the tables in chapter 4.1.1 of GSM TS 05.05 */
+/*! determine power control level for given dBm value, as indicated
+ *  by the tables in chapter 4.1.1 of GSM TS 05.05
+ *  \param[in] GSM frequency band
+ *  \param[in] dbm RF power value in dBm
+ *  \returns TS 05.05 power control level */
 int ms_pwr_ctl_lvl(enum gsm_band band, unsigned int dbm)
 {
 	switch (band) {
@@ -416,6 +599,10 @@ int ms_pwr_ctl_lvl(enum gsm_band band, unsigned int dbm)
 	return -EINVAL;
 }
 
+/*! Convert TS 05.05 power level to absolute dBm value
+ *  \param[in] band GSM frequency band
+ *  \param[in] lvl TS 05.05 power control level
+ *  \returns RF power level in dBm */
 int ms_pwr_dbm(enum gsm_band band, uint8_t lvl)
 {
 	lvl &= 0x1f;
@@ -454,7 +641,9 @@ int ms_pwr_dbm(enum gsm_band band, uint8_t lvl)
 	return -EINVAL;
 }
 
-/* According to TS 05.08 Chapter 8.1.4 */
+/*! Convert TS 05.08 RxLev to dBm (TS 05.08 Chapter 8.1.4)
+ *  \param[in] rxlev TS 05.08 RxLev value
+ *  \returns Received RF power in dBm */
 int rxlev2dbm(uint8_t rxlev)
 {
 	if (rxlev > 63)
@@ -463,7 +652,9 @@ int rxlev2dbm(uint8_t rxlev)
 	return -110 + rxlev;
 }
 
-/* According to TS 05.08 Chapter 8.1.4 */
+/*! Convert RF signal level in dBm to TS 05.08 RxLev (TS 05.08 Chapter 8.1.4)
+ *  \param[in] dbm RF signal level in dBm
+ *  \returns TS 05.08 RxLev value */
 uint8_t dbm2rxlev(int dbm)
 {
 	int rxlev = dbm + 110;
@@ -476,6 +667,7 @@ uint8_t dbm2rxlev(int dbm)
 	return rxlev;
 }
 
+/*! Return string name of a given GSM Band */
 const char *gsm_band_name(enum gsm_band band)
 {
 	switch (band) {
@@ -499,9 +691,10 @@ const char *gsm_band_name(enum gsm_band band)
 	return "invalid";
 }
 
+/*! Parse string name of a GSM band */
 enum gsm_band gsm_band_parse(const char* mhz)
 {
-	while (*mhz && !isdigit(*mhz))
+	while (*mhz && !isdigit((unsigned char)*mhz))
 		mhz++;
 
 	if (*mhz == '\0')
@@ -529,32 +722,61 @@ enum gsm_band gsm_band_parse(const char* mhz)
 	}
 }
 
-enum gsm_band gsm_arfcn2band(uint16_t arfcn)
+/*! Resolve GSM band from ARFCN.
+ *  In Osmocom, we use the highest bit of the \a arfcn to indicate PCS
+ *  \param[in] arfcn Osmocom ARFCN, highest bit determines PCS mode
+ *  \param[out] band GSM Band containing \arfcn if arfcn is valid, undetermined otherwise
+ *  \returns 0 if arfcn is valid and \a band was set, negative on error */
+int gsm_arfcn2band_rc(uint16_t arfcn, enum gsm_band *band)
 {
 	int is_pcs = arfcn & ARFCN_PCS;
 
 	arfcn &= ~ARFCN_FLAG_MASK;
 
-	if (is_pcs)
-		return GSM_BAND_1900;
-	else if (arfcn <= 124)
-		return GSM_BAND_900;
-	else if (arfcn >= 955 && arfcn <= 1023)
-		return GSM_BAND_900;
-	else if (arfcn >= 128 && arfcn <= 251)
-		return GSM_BAND_850;
-	else if (arfcn >= 512 && arfcn <= 885)
-		return GSM_BAND_1800;
-	else if (arfcn >= 259 && arfcn <= 293)
-		return GSM_BAND_450;
-	else if (arfcn >= 306 && arfcn <= 340)
-		return GSM_BAND_480;
-	else if (arfcn >= 350 && arfcn <= 425)
-		return GSM_BAND_810;
-	else if (arfcn >= 438 && arfcn <= 511)
-		return GSM_BAND_750;
-	else
-		return GSM_BAND_1800;
+	if (is_pcs) {
+		*band = GSM_BAND_1900;
+		return 0;
+	} else if (arfcn <= 124) {
+		*band = GSM_BAND_900;
+		return 0;
+	} else if (arfcn >= 940 && arfcn <= 1023) {
+		*band = GSM_BAND_900;
+		return 0;
+	} else if (arfcn >= 128 && arfcn <= 251) {
+		*band = GSM_BAND_850;
+		return 0;
+	} else if (arfcn >= 512 && arfcn <= 885) {
+		*band = GSM_BAND_1800;
+		return 0;
+	} else if (arfcn >= 259 && arfcn <= 293) {
+		*band = GSM_BAND_450;
+		return 0;
+	} else if (arfcn >= 306 && arfcn <= 340) {
+		*band = GSM_BAND_480;
+		return 0;
+	} else if (arfcn >= 350 && arfcn <= 425) {
+		*band = GSM_BAND_810;
+		return 0;
+	} else if (arfcn >= 438 && arfcn <= 511) {
+		*band = GSM_BAND_750;
+		return 0;
+	}
+	return -1;
+}
+
+/*! Resolve GSM band from ARFCN, aborts process on invalid ARFCN.
+ *  In Osmocom, we use the highest bit of the \a arfcn to indicate PCS.
+ *  DEPRECATED: Use gsm_arfcn2band_rc instead.
+ *  \param[in] arfcn Osmocom ARFCN, highest bit determines PCS mode
+ *  \returns GSM Band if ARFCN is valid (part of any valid band), aborts otherwise */
+enum gsm_band gsm_arfcn2band(uint16_t arfcn)
+{
+	enum gsm_band band;
+	if (gsm_arfcn2band_rc(arfcn, &band) == 0)
+		return band;
+
+	osmo_panic("%s:%d Invalid arfcn %" PRIu16 " passed to gsm_arfcn2band\n",
+		   __FILE__, __LINE__, arfcn);
 }
 
 struct gsm_freq_range {
@@ -565,10 +787,11 @@ struct gsm_freq_range {
 	uint16_t flags;
 };
 
+/* See 3GPP TS 45.005 Section 2 Table 2-2 */
 static struct gsm_freq_range gsm_ranges[] = {
 	{ 512,  810, 18502, 800, ARFCN_PCS },	/* PCS 1900 */
 	{   0,  124,  8900, 450, 0 },		/* P-GSM + E-GSM ARFCN 0 */
-	{ 955, 1023,  8762, 450, 0 },		/* E-GSM + R-GSM */
+	{ 940, 1023,  8732, 450, 0 },		/* E-GSM + R-GSM + ER-GSM */
 	{ 128,  251,  8242, 450, 0 },		/* GSM 850  */
 	{ 512,  885, 17102, 950, 0 },		/* DCS 1800 */
 	{ 259,  293,  4506, 100, 0 },		/* GSM 450  */
@@ -578,7 +801,10 @@ static struct gsm_freq_range gsm_ranges[] = {
 	{ /* Guard */ }
 };
 
-/* Convert an ARFCN to the frequency in MHz * 10 */
+/*! Convert an ARFCN to the frequency in MHz * 10
+ *  \param[in] arfcn GSM ARFCN to convert
+ *  \param[in] uplink Uplink (1) or Downlink (0) frequency
+ *  \returns Frequency in units of 1/10ths of MHz (100kHz) */
 uint16_t gsm_arfcn2freq10(uint16_t arfcn, int uplink)
 {
 	struct gsm_freq_range *r;
@@ -602,7 +828,10 @@ uint16_t gsm_arfcn2freq10(uint16_t arfcn, int uplink)
 	return uplink ? freq10_ul : freq10_dl;
 }
 
-/* Convert a Frequency in MHz * 10 to ARFCN */
+/*! Convert a Frequency in MHz * 10 to ARFCN
+ *  \param[in] freq10 Frequency in units of 1/10ths of MHz (100kHz)
+ *  \param[in] uplink Frequency is Uplink (1) or Downlink (0)
+ *  \returns ARFCN in case of success; 0xffff on error */
 uint16_t gsm_freq102arfcn(uint16_t freq10, int uplink)
 {
 	struct gsm_freq_range *r;
@@ -632,6 +861,9 @@ uint16_t gsm_freq102arfcn(uint16_t freq10, int uplink)
 	return arfcn;
 }
 
+/*! Parse GSM Frame Number into struct \ref gsm_time
+ *  \param[out] time Caller-provided memory for \ref gsm_time
+ *  \param[in] fn GSM Frame Number */
 void gsm_fn2gsmtime(struct gsm_time *time, uint32_t fn)
 {
 	time->fn = fn;
@@ -641,13 +873,135 @@ void gsm_fn2gsmtime(struct gsm_time *time, uint32_t fn)
 	time->tc = (time->fn / 51) % 8;
 }
 
-uint32_t gsm_gsmtime2fn(struct gsm_time *time)
+/*! Parse GSM Frame Number into printable string
+ *  \param[in] fn GSM Frame Number
+ *  \returns pointer to printable string */
+char *gsm_fn_as_gsmtime_str(uint32_t fn)
 {
-	/* TS 05.02 Chapter 4.3.3 TDMA frame number */
-	return (51 * ((time->t3 - time->t2 + 26) % 26) + time->t3 + (26 * 51 * time->t1));
+	struct gsm_time time;
+
+	gsm_fn2gsmtime(&time, fn);
+	return osmo_dump_gsmtime(&time);
 }
 
-/* TS 23.003 Chapter 2.6 */
+/*! Encode decoded \ref gsm_time to Frame Number
+ *  \param[in] time GSM Time in decoded structure
+ *  \returns GSM Frame Number */
+uint32_t gsm_gsmtime2fn(const struct gsm_time *time)
+{
+	uint32_t fn;
+
+	/* See also:
+	 * 3GPP TS 44.018, section 10.5.2.38, 3GPP TS 45.002 section 4.3.3, and
+	 * 3GPP TS 48.058, section 9.3.8 */
+	fn = 51 * OSMO_MOD_FLR((time->t3-time->t2), 26) + time->t3 + 51 * 26 * time->t1;
+
+	/* Note: Corrupted input values may cause a resulting frame number
+	 * larger then the maximum permitted value of GSM_MAX_FN. Even though
+	 * the caller is expected to check the input values beforehand we must
+	 * make sure that the result cannot exceed the value range of a valid
+	 * GSM frame number. */
+	return fn % GSM_MAX_FN;
+}
+
+char *osmo_dump_gsmtime_buf(char *buf, size_t buf_len, const struct gsm_time *tm)
+{
+	snprintf(buf, buf_len, "%06"PRIu32"/%02"PRIu16"/%02"PRIu8"/%02"PRIu8"/%02"PRIu8,
+		 tm->fn, tm->t1, tm->t2, tm->t3, (uint8_t)tm->fn%52);
+	buf[buf_len-1] = '\0';
+	return buf;
+}
+
+char *osmo_dump_gsmtime(const struct gsm_time *tm)
+{
+	static __thread char buf[64];
+	return osmo_dump_gsmtime_buf(buf, sizeof(buf), tm);
+}
+
+char *osmo_dump_gsmtime_c(const void *ctx, const struct gsm_time *tm)
+{
+	char *buf = talloc_size(ctx, 64);
+	if (!buf)
+		return NULL;
+	return osmo_dump_gsmtime_buf(buf, 64, tm);
+}
+
+#define GSM_RFN_THRESHOLD (GSM_RFN_MODULUS / 2)
+uint32_t gsm_rfn2fn(uint16_t rfn, uint32_t curr_fn)
+{
+	uint32_t curr_rfn;
+	uint32_t fn_rounded;
+	const uint32_t rfn32 = rfn; /* used as 32bit for calculations */
+
+	/* Ensure that all following calculations are performed with the
+	 * relative frame number */
+	OSMO_ASSERT(rfn32 < GSM_RFN_MODULUS);
+
+	/* Compute an internal relative frame number from the full internal
+	   frame number */
+	curr_rfn = gsm_fn2rfn(curr_fn);
+
+	/* Compute a "rounded" version of the internal frame number, which
+	 * exactly fits in the RFN_MODULUS raster */
+	fn_rounded = GSM_TDMA_FN_SUB(curr_fn, curr_rfn);
+
+	/* If the delta between the internal and the external relative frame
+	 * number exceeds a certain limit, we need to assume that the incoming
+	 * request belongs to a the previous rfn period. To correct this,
+	 * we roll back the rounded frame number by one RFN_MODULUS */
+	if (GSM_TDMA_FN_DIFF(rfn32, curr_rfn) > GSM_RFN_THRESHOLD) {
+		/* Race condition between rfn and curr_fn detected:  rfn belongs
+		to the previous RFN_MODULUS cycle, wrapping... */
+		if (fn_rounded < GSM_RFN_MODULUS) {
+			/* Corner case detected: wrapping crosses GSM_MAX_FN border */
+			fn_rounded = GSM_TDMA_FN_SUB(GSM_MAX_FN, (GSM_TDMA_FN_SUB(GSM_RFN_MODULUS, fn_rounded)));
+		} else {
+			fn_rounded = GSM_TDMA_FN_SUB(fn_rounded, GSM_RFN_MODULUS);
+		}
+	}
+
+	/* The real frame number is the sum of the rounded frame number and the
+	 * relative framenumber computed via RACH */
+	return GSM_TDMA_FN_SUM(fn_rounded, rfn32);
+}
+
+/*! append range1024 encoded data to bit vector
+ *  \param[out] bv Caller-provided output bit-vector
+ *  \param[in] r Input Range1024 sructure */
+void bitvec_add_range1024(struct bitvec *bv, const struct gsm48_range_1024 *r)
+{
+	bitvec_set_uint(bv, r->w1_hi, 2);
+	bitvec_set_uint(bv, r->w1_lo, 8);
+	bitvec_set_uint(bv, r->w2_hi, 8);
+	bitvec_set_uint(bv, r->w2_lo, 1);
+	bitvec_set_uint(bv, r->w3_hi, 7);
+	bitvec_set_uint(bv, r->w3_lo, 2);
+	bitvec_set_uint(bv, r->w4_hi, 6);
+	bitvec_set_uint(bv, r->w4_lo, 2);
+	bitvec_set_uint(bv, r->w5_hi, 6);
+	bitvec_set_uint(bv, r->w5_lo, 2);
+	bitvec_set_uint(bv, r->w6_hi, 6);
+	bitvec_set_uint(bv, r->w6_lo, 2);
+	bitvec_set_uint(bv, r->w7_hi, 6);
+	bitvec_set_uint(bv, r->w7_lo, 2);
+	bitvec_set_uint(bv, r->w8_hi, 6);
+	bitvec_set_uint(bv, r->w8_lo, 1);
+	bitvec_set_uint(bv, r->w9, 7);
+	bitvec_set_uint(bv, r->w10, 7);
+	bitvec_set_uint(bv, r->w11_hi, 1);
+	bitvec_set_uint(bv, r->w11_lo, 6);
+	bitvec_set_uint(bv, r->w12_hi, 2);
+	bitvec_set_uint(bv, r->w12_lo, 5);
+	bitvec_set_uint(bv, r->w13_hi, 3);
+	bitvec_set_uint(bv, r->w13_lo, 4);
+	bitvec_set_uint(bv, r->w14_hi, 4);
+	bitvec_set_uint(bv, r->w14_lo, 3);
+	bitvec_set_uint(bv, r->w15_hi, 5);
+	bitvec_set_uint(bv, r->w15_lo, 2);
+	bitvec_set_uint(bv, r->w16, 6);
+}
+
+/*! Determine GPRS TLLI Type (TS 23.003 Chapter 2.6) */
 int gprs_tlli_type(uint32_t tlli)
 {
 	if ((tlli & 0xc0000000) == 0xc0000000)
@@ -666,6 +1020,31 @@ int gprs_tlli_type(uint32_t tlli)
 	return TLLI_RESERVED;
 }
 
+/*! Determine P-TMSI from foreign and local TLLIs
+ *
+ *  \param[in] tlli P-TMSI
+ *  \param[in] type TLLI Type we want to derive from \a p_tmsi
+ *  \returns P-TMSI or 0xffffffff on error. */
+uint32_t gprs_tlli2tmsi(uint32_t tlli)
+{
+	uint32_t ptmsi = 0xc0000000;
+
+	switch (gprs_tlli_type(tlli)) {
+	case TLLI_LOCAL:
+	case TLLI_FOREIGN:
+		break;
+	default:
+		return 0xffffffff;
+	}
+
+	ptmsi |= tlli;
+	return ptmsi;
+}
+
+/*! Determine TLLI from P-TMSI
+ *  \param[in] p_tmsi P-TMSI
+ *  \param[in] type TLLI Type we want to derive from \a p_tmsi
+ *  \returns TLLI of given type */
 uint32_t gprs_tmsi2tlli(uint32_t p_tmsi, enum gprs_tlli_type type)
 {
 	uint32_t tlli;
@@ -718,3 +1097,12 @@ int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets)
 	return gsm_7bit_encode_n(result, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
 				 data, octets);
 }
+
+/* This is also used by osmo-hlr's db schema */
+const struct value_string osmo_rat_type_names[] = {
+	{ OSMO_RAT_UNKNOWN, "unknown" },
+	{ OSMO_RAT_GERAN_A, "GERAN-A" },
+	{ OSMO_RAT_UTRAN_IU, "UTRAN-Iu" },
+	{ OSMO_RAT_EUTRAN_SGS, "EUTRAN-SGs" },
+	{}
+};

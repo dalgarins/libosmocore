@@ -1,8 +1,11 @@
-/* classic SIM card specific structures/routines */
+/*! \file card_fs_sim.c
+ * classic SIM card specific structures/routines. */
 /*
  * (C) 2012-2014 by Harald Welte <laforge@gnumonks.org>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  */
 
@@ -48,7 +47,7 @@ static const struct osim_card_sw ts11_11_sw[] = {
 		.u.str = "SIM Application Toolkit is busy, command cannot be executed at present",
 	}, {
 		0x9200, 0xfff0, SW_TYPE_STR, SW_CLS_WARN,
-		.u.str = "Memory management - Command successful but after using an internal updat retry X times",
+		.u.str = "Memory management - Command successful but after using an internal update retry X times",
 	}, {
 		0x9240, 0xffff, SW_TYPE_STR, SW_CLS_ERROR,
 		.u.str = "Memory management - Memory problem",
@@ -213,6 +212,7 @@ static int gsm_plmnsel_decode(struct osim_decoded_data *dd,
 
 		mnc = element_alloc_sub(elem, "MNC", ELEM_T_UINT16, ELEM_REPR_DEC);
 		mnc->u.u16 = ra_id.mnc;
+		/* TODO: what about ra_id.mnc_3_digits? */
 	}
 
 	return 0;
@@ -427,7 +427,7 @@ int osim_int_cprof_add_gsm(struct osim_file_desc *mf)
 	add_df_with_ef(gsm, 0x5F33, "DF.ACeS", NULL, 0);
 	add_df_with_ef(gsm, 0x5F3C, "DF.MExE", sim_ef_in_mexe,
 			ARRAY_SIZE(sim_ef_in_mexe));
-	add_df_with_ef(gsm, 0x5F40, "DF.EIA/TIA-533", NULL, 0);
+	add_df_with_ef(gsm, 0x5F40, "DF.EIA-TIA-533", NULL, 0);
 	add_df_with_ef(gsm, 0x5F60, "DF.CTS", NULL, 0);
 	add_df_with_ef(gsm, 0x5F70, "DF.SoLSA", sim_ef_in_solsa,
 			ARRAY_SIZE(sim_ef_in_solsa));

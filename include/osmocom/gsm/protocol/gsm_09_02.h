@@ -1,7 +1,7 @@
-#ifndef PROTO_GSM_09_02_H
-#define PROTO_GSM_09_02_H
+/*! \file gsm_09_02.h
+ * GSM TS 09.02  definitions (MAP). */
 
-/* GSM TS 09.02  definitions (MAP) */
+#pragma once
 
 /* Section 17.7.4 */
 /* SS-Status */
@@ -133,5 +133,3 @@
 #define GSM0902_TS_CODE_PLMN_SPECIFIC_TS_C			0xDC
 #define GSM0902_TS_CODE_PLMN_SPECIFIC_TS_D			0xDD
 #define GSM0902_TS_CODE_PLMN_SPECIFIC_TS_E			0xDE
-
-#endif /* PROTO_GSM_09_02_H */

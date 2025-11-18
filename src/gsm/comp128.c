@@ -1,6 +1,5 @@
-/*
- * COMP128 implementation
- *
+/*! \file comp128.c
+ *  COMP128 v1; common/old GSM Authentication Algorithm (A3/A8).
  *
  * This code is inspired by original code from :
  *  Marc Briceno <marc@scard.org>, Ian Goldberg <iang@cs.berkeley.edu>,
@@ -11,10 +10,43 @@
  * A comment snippet from the original code is included below, it describes
  * where the doc came from and how the algorithm was reverse engineered.
  *
+ * This code derived from a leaked document from the GSM standards.
+ * Some missing pieces were filled in by reverse-engineering a working SIM.
+ * We have verified that this is the correct COMP128 algorithm.
  *
+ * The first page of the document identifies it as
+ *
+ * 	_Technical Information: GSM System Security Study_.
+ * 	10-1617-01, 10th June 1988.
+ *
+ * The bottom of the title page is marked
+ *
+ * 	Racal Research Ltd.
+ * 	Worton Drive, Worton Grange Industrial Estate,
+ * 	Reading, Berks. RG2 0SB, England.
+ * 	Telephone: Reading (0734) 868601   Telex: 847152
+ *
+ * The relevant bits are in Part I, Section 20 (pages 66--67).  Enjoy!
+ *
+ * Note: There are three typos in the spec (discovered by
+ * reverse-engineering).
+ * - First, "z = (2 * x[n] + x[n]) mod 2^(9-j)" should clearly read
+ *   "z = (2 * x[m] + x[n]) mod 2^(9-j)".
+ * - Second, the "k" loop in the "Form bits from bytes" section is severely
+ *   botched: the k index should run only from 0 to 3, and clearly the range
+ *   on "the (8-k)th bit of byte j" is also off (should be 0..7, not 1..8,
+ *   to be consistent with the subsequent section).
+ * - Third, SRES is taken from the first 8 nibbles of x[], not the last 8 as
+ *   claimed in the document.  (And the document doesn't specify how Kc is
+ *   derived, but that was also easily discovered with reverse engineering.)
+ * All of these typos have been corrected in the following code.
+ */
+/*
  * (C) 2009 by Sylvain Munaut <tnt@246tNt.com>
  *
  * All Rights Reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0+
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,47 +58,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- */
-
-/*
- * --- SNIP ---
- *
- * This code derived from a leaked document from the GSM standards.
- * Some missing pieces were filled in by reverse-engineering a working SIM.
- * We have verified that this is the correct COMP128 algorithm.
- *
- * The first page of the document identifies it as
- * 	_Technical Information: GSM System Security Study_.
- * 	10-1617-01, 10th June 1988.
- * The bottom of the title page is marked
- * 	Racal Research Ltd.
- * 	Worton Drive, Worton Grange Industrial Estate,
- * 	Reading, Berks. RG2 0SB, England.
- * 	Telephone: Reading (0734) 868601   Telex: 847152
- * The relevant bits are in Part I, Section 20 (pages 66--67).  Enjoy!
- *
- * Note: There are three typos in the spec (discovered by
- * reverse-engineering).
- * First, "z = (2 * x[n] + x[n]) mod 2^(9-j)" should clearly read
- * "z = (2 * x[m] + x[n]) mod 2^(9-j)".
- * Second, the "k" loop in the "Form bits from bytes" section is severely
- * botched: the k index should run only from 0 to 3, and clearly the range
- * on "the (8-k)th bit of byte j" is also off (should be 0..7, not 1..8,
- * to be consistent with the subsequent section).
- * Third, SRES is taken from the first 8 nibbles of x[], not the last 8 as
- * claimed in the document.  (And the document doesn't specify how Kc is
- * derived, but that was also easily discovered with reverse engineering.)
- * All of these typos have been corrected in the following code.
- *
- * --- /SNIP ---
  */
 
 #include <string.h>
 #include <stdint.h>
+
+/*! \addtogroup auth
+ *  @{
+ * \file comp128.c */
 
 /* The compression tables (just copied ...) */
 static const uint8_t table_0[512] = {
@@ -184,8 +183,13 @@ _comp128_permutation(uint8_t *x, uint8_t *bits)
 		x[(i>>3)+16] |= bits[(i*17) & 127] << (7-(i&7));
 }
 
+/*! Perform COMP128v1 algorithm
+ *  \param[in] ki Secret Key K(i) of subscriber
+ *  \param[in] rand Random Challenge
+ *  \param[out] sres user-supplied buffer for storing computed SRES value
+ *  \param[out] kc user-supplied buffer for storing computed Kc value */
 void
-comp128(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
+comp128v1(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 {
 	int i;
 	uint8_t x[32], bits[128];
@@ -228,3 +232,16 @@ comp128(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
 	kc[7] = 0;
 }
 
+
+/*! Perform COMP128v1 algorithm
+ *  \param[in] ki Secret Key K(i) of subscriber
+ *  \param[in] rand Random Challenge
+ *  \param[out] sres user-supplied buffer for storing computed SRES value
+ *  \param[out] kc user-supplied buffer for storing computed Kc value */
+void
+comp128(const uint8_t *ki, const uint8_t *rand, uint8_t *sres, uint8_t *kc)
+{
+    comp128v1(ki, rand, sres, kc);
+}
+
+/*! @} */

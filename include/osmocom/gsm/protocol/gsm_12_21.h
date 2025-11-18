@@ -1,9 +1,6 @@
-#pragma once
-
-/* GSM Network Management messages on the A-bis interface 
- * 3GPP TS 12.21 version 8.0.0 Release 1999 / ETSI TS 100 623 V8.0.0 */
-
-/* (C) 2008-2009 by Harald Welte <laforge@gnumonks.org>
+/* 3GPP TS 12.21, nowadays 3GPP TS 52.021 */
+/*
+ * (C) 2008-2009 by Harald Welte <laforge@gnumonks.org>
  * All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify
@@ -16,72 +13,72 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
+
+#pragma once
 
 /*! \addtogroup oml
  *  @{
- */
-
-/*! \file gsm_12_21.h */
+ * \file gsm_12_21.h */
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <osmocom/gsm/tlv.h>
 
-/*! \brief generic header in front of every OML message according to TS 08.59 */
+/*! generic header in front of every OML message according to TS 08.59 */
 struct abis_om_hdr {
-	/*! \brief Message Discriminator \ref abis_oml_mdisc */
+	/*! Message Discriminator \ref abis_oml_mdisc */
 	uint8_t	mdisc;
-	/*! \brief Placement (like \ref ABIS_OM_PLACEMENT_ONLY) */
+	/*! Placement (like \ref ABIS_OM_PLACEMENT_ONLY) */
 	uint8_t	placement;
-	/*! \brief Sequence Number (if \ref ABIS_OM_PLACEMENT_MIDDLE) */
+	/*! Sequence Number (if \ref ABIS_OM_PLACEMENT_MIDDLE) */
 	uint8_t	sequence;
-	/*! \brief Length in octets */
+	/*! Length in octets */
 	uint8_t	length;
-	/*! \brief actual payload data */
+	/*! actual payload data */
 	uint8_t	data[0];
 } __attribute__ ((packed));
 
-/*! \brief Message Discriminator for Formatted Object Messages */
+#define ABIS_NM_MSG_SIZE	1024
+#define ABIS_NM_MSG_HEADROOM	128
+
+/*! Message Discriminator for Formatted Object Messages */
 #define ABIS_OM_MDISC_FOM		0x80
-/*! \brief Message Discriminator for Man Machine Interface */
+/*! Message Discriminator for Man Machine Interface */
 #define ABIS_OM_MDISC_MMI		0x40
-/*! \brief Message Discriminator for TRAU management */
+/*! Message Discriminator for TRAU management */
 #define ABIS_OM_MDISC_TRAU		0x20
-/*! \brief Message Discriminator for Manufacturer Specific Messages */
+/*! Message Discriminator for Manufacturer Specific Messages */
 #define ABIS_OM_MDISC_MANUF		0x10
 
-/*! \brief Entire OML message is in the L2 frame */
+/*! Entire OML message is in the L2 frame */
 #define ABIS_OM_PLACEMENT_ONLY		0x80
-/*! \brief First fragment of OML message is in this L2 frame */
+/*! First fragment of OML message is in this L2 frame */
 #define ABIS_OM_PLACEMENT_FIRST 	0x40
-/*! \brief Middle fragment of OML message is in this L2 frame */
+/*! Middle fragment of OML message is in this L2 frame */
 #define ABIS_OM_PLACEMENT_MIDDLE	0x20
-/*! \brief Last fragment of OML message is in this L2 frame */
+/*! Last fragment of OML message is in this L2 frame */
 #define ABIS_OM_PLACEMENT_LAST		0x10
 
-/*! \brief OML Object Instance */
+/*! OML Object Instance */
 struct abis_om_obj_inst {
-	uint8_t	bts_nr;	/*!< \brief BTS Number */
-	uint8_t	trx_nr;	/*!< \brief TRX Number */
-	uint8_t	ts_nr;	/*!< \brief Timeslot Number */
+	uint8_t	bts_nr;	/*!< BTS Number */
+	uint8_t	trx_nr;	/*!< TRX Number */
+	uint8_t	ts_nr;	/*!< Timeslot Number */
 } __attribute__ ((packed));
 
-/*! \brief OML Object Instance */
+/*! OML FOM header */
 struct abis_om_fom_hdr {
-	uint8_t	msg_type;	/*!< \brief Message Type (\ref abis_nm_msgtype) */
-	uint8_t	obj_class;	/*!< \brief Object Class (\ref abis_nm_obj_class) */
-	struct abis_om_obj_inst	obj_inst; /*!< \brief Object Instance */
-	uint8_t	data[0];	/*!< \brief Data */
+	uint8_t	msg_type;	/*!< Message Type (\ref abis_nm_msgtype) */
+	uint8_t	obj_class;	/*!< Object Class (\ref abis_nm_obj_class) */
+	struct abis_om_obj_inst	obj_inst; /*!< Object Instance */
+	uint8_t	data[0];	/*!< Data */
 } __attribute__ ((packed));
 
-/*! \brief Size of the OML FOM header in octets */
+/*! Size of the OML FOM header in octets */
 #define ABIS_OM_FOM_HDR_SIZE	(sizeof(struct abis_om_hdr) + sizeof(struct abis_om_fom_hdr))
 
-/*! \brief OML Message Type (Section 9.1) */
+/*! OML Message Type (Section 9.1) */
 enum abis_nm_msgtype {
 	/* SW Download Management Messages */
 	NM_MT_LOAD_INIT			= 0x01,
@@ -192,7 +189,7 @@ enum abis_nm_msgtype {
 	NM_MT_SET_ALARM_THRES_NACK,
 };
 
-/*! \brief Siemens specific OML Message Types */
+/*! Siemens specific OML Message Types */
 enum abis_nm_msgtype_bs11 {
 	NM_MT_BS11_RESET_RESOURCE	= 0x74,
 
@@ -228,7 +225,7 @@ enum abis_nm_msgtype_bs11 {
 	NM_MT_BS11_RECONNECT_ACK,
 };
 
-/*! \brief ip.access specific OML Message Types */
+/*! ip.access specific OML Message Types */
 enum abis_nm_msgtype_ipacc {
 	NM_MT_IPACC_RESTART		= 0x87,
 	NM_MT_IPACC_RESTART_ACK,
@@ -256,12 +253,35 @@ enum abis_nm_msgtype_ipacc {
 	NM_MT_IPACC_SET_ATTR_NACK,
 };
 
+/*! OML Probable Cause (Section 9.4.43) Manufacturer specific values */
+enum abis_mm_event_causes {
+	/* Critical causes */
+	OSMO_EVT_CRIT_SW_FATAL		= 0x0000,
+	OSMO_EVT_CRIT_PROC_STOP		= 0x0002,
+	OSMO_EVT_CRIT_RTP_TOUT		= 0x032c,
+	OSMO_EVT_CRIT_BOOT_FAIL		= 0x0401,
+	/* Major causes */
+	OSMO_EVT_MAJ_UKWN_MSG		= 0x0002,
+	OSMO_EVT_MAJ_RSL_FAIL		= 0x0309,
+	OSMO_EVT_MAJ_UNSUP_ATTR		= 0x0318,
+	OSMO_EVT_MAJ_NET_CONGEST	= 0x032b,
+	/* Minor causes */
+	OSMO_EVT_MIN_PAG_TAB_FULL	= 0x0401,
+	/* Warning causes */
+	OSMO_EVT_WARN_SW_WARN		= 0x0001,
+	/* External causes */
+	OSMO_EVT_EXT_ALARM		= 0xfeed,
+	OSMO_EVT_PCU_VERS		= 0xface,
+};
+
+extern const struct value_string abis_mm_event_cause_names[];
+
 enum abis_nm_bs11_cell_alloc {
 	NM_BS11_CANR_GSM	= 0x00,
 	NM_BS11_CANR_DCS1800	= 0x01,
 };
 
-/*! \brief OML Object Class (Section 9.2) */
+/*! OML Object Class (Section 9.2) */
 enum abis_nm_obj_class {
 	NM_OC_SITE_MANAGER		= 0x00,
 	NM_OC_BTS,
@@ -292,7 +312,7 @@ enum abis_nm_obj_class {
 	NM_OC_NULL			= 0xff,
 };
 
-/*! \brief OML Attributes / IEs (Section 9.4) */
+/*! OML Attributes / IEs (Section 9.4) */
 enum abis_nm_attr {
 	NM_ATT_ABIS_CHANNEL	= 0x01,
 	NM_ATT_ADD_INFO,
@@ -422,7 +442,7 @@ enum abis_nm_attr {
 	NM_ATT_IPACC_NS_CFG		= 0xa0,
 	NM_ATT_IPACC_BSSGP_CFG		= 0xa1,
 	NM_ATT_IPACC_NS_LINK_CFG	= 0xa2,
-	NM_ATT_IPACC_RLC_CFG		= 0xa3,	
+	NM_ATT_IPACC_RLC_CFG		= 0xa3,
 	NM_ATT_IPACC_ALM_THRESH_LIST	= 0xa4,
 	NM_ATT_IPACC_MONIT_VAL_LIST	= 0xa5,
 	NM_ATT_IPACC_TIB_CONTROL	= 0xa6,
@@ -439,7 +459,7 @@ enum abis_nm_attr {
 
 
 	NM_ATT_BS11_RF_RES_IND_PER	= 0x8f,
-	
+
 	NM_ATT_BS11_RX_LEV_MIN_CELL	= 0x90,
 	NM_ATT_BS11_ABIS_EXT_TIME	= 0x91,
 	NM_ATT_BS11_TIMER_HO_REQUEST	= 0x92,
@@ -488,11 +508,12 @@ enum abis_nm_attr {
 
 	/* osmocom (osmo-bts) specific attributes, used in combination
 	 * with the "org.osmocom" manufacturer identification */
+	NM_ATT_OSMO_NS_LINK_CFG         = 0xfd, /* osmocom version supports IPv4 & IPv6 in difference to IPACC */
 	NM_ATT_OSMO_REDUCEPOWER		= 0xfe,	/* TLV_TYPE_TV */
 };
 #define NM_ATT_BS11_FILE_DATA	NM_ATT_EVENT_TYPE
 
-/*! \brief OML Administrative State (Section 9.4.4) */
+/*! OML Administrative State (Section 9.4.4) */
 enum abis_nm_adm_state {
 	NM_STATE_LOCKED		= 0x01,
 	NM_STATE_UNLOCKED	= 0x02,
@@ -500,25 +521,27 @@ enum abis_nm_adm_state {
 	NM_STATE_NULL		= 0xff,
 };
 
-/*! \brief OML Availability State (Section 9.4.7) */
+/*! OML Availability State (Section 9.4.7) */
 enum abis_nm_avail_state {
-	NM_AVSTATE_IN_TEST	= 1,
+	NM_AVSTATE_IN_TEST	= 0,
+	NM_AVSTATE_FAILED	= 1,
 	NM_AVSTATE_POWER_OFF	= 2,
 	NM_AVSTATE_OFF_LINE	= 3,
+	/* <not used> = 4, */
 	NM_AVSTATE_DEPENDENCY	= 5,
 	NM_AVSTATE_DEGRADED	= 6,
 	NM_AVSTATE_NOT_INSTALLED= 7,
 	NM_AVSTATE_OK		= 0xff,
 };
 
-/*! \brief OML Operational State */
+/*! OML Operational State */
 enum abis_nm_op_state {
 	NM_OPSTATE_DISABLED	= 1,
 	NM_OPSTATE_ENABLED	= 2,
 	NM_OPSTATE_NULL		= 0xff,
 };
 
-/* \brief Channel Combination (Section 9.4.13) */
+/* Channel Combination (Section 9.4.13) */
 enum abis_nm_chan_comb {
 	NM_CHANC_TCHFull	= 0x00,	/* TCH/F + TCH/H + SACCH/TF */
 	NM_CHANC_TCHHalf	= 0x01, /* TCH/H(0,1) + FACCH/H(0,1) +
@@ -539,9 +562,13 @@ enum abis_nm_chan_comb {
 	NM_CHANC_IPAC_PDCH	= 0x0d,	/* PDTCH/F + PACCH/F + PTCCH/F */
 	NM_CHANC_IPAC_TCHFull_PDCH = 0x80,
 	NM_CHANC_IPAC_TCHFull_TCHHalf = 0x81,
+	/* osmocom */
+	NM_CHANC_OSMO_DYN = 0x90,
 };
+/* Backward compatibility with older naming: */
+#define NM_CHANC_OSMO_TCHFull_TCHHalf_PDCH NM_CHANC_OSMO_DYN
 
-/*! \brief Event Type (Section 9.4.16) */
+/*! Event Type (Section 9.4.16) */
 enum abis_nm_event_type {
 	NM_EVT_COMM_FAIL	= 0x00,
 	NM_EVT_QOS_FAIL		= 0x01,
@@ -550,7 +577,7 @@ enum abis_nm_event_type {
 	NM_EVT_ENV_FAIL		= 0x04,
 };
 
-/*! \brief Perceived Severity (Section: 9.4.63) */
+/*! Perceived Severity (Section: 9.4.63) */
 enum abis_nm_severity {
 	NM_SEVER_CEASED		= 0x00,
 	NM_SEVER_CRITICAL	= 0x01,
@@ -560,14 +587,18 @@ enum abis_nm_severity {
 	NM_SEVER_INDETERMINATE	= 0x05,
 };
 
-/*! \brief Probable Cause Type (Section 9.4.43) */
+/*! Probable Cause Type (Section 9.4.43) */
 enum abis_nm_pcause_type {
 	NM_PCAUSE_T_X721	= 0x01,
 	NM_PCAUSE_T_GSM		= 0x02,
 	NM_PCAUSE_T_MANUF	= 0x03,
 };
 
-/*! \brief NACK causes (Section 9.4.36) */
+extern const struct value_string abis_nm_pcause_type_names[];
+extern const struct value_string abis_nm_msgtype_names[];
+extern const struct value_string abis_nm_att_names[];
+
+/*! NACK causes (Section 9.4.36) */
 enum abis_nm_nack_cause {
 	/* General Nack Causes */
 	NM_NACK_INCORR_STRUCT		= 0x01,
@@ -605,15 +636,28 @@ enum abis_nm_nack_cause {
 	NM_NACK_MEAS_NOTSTART		= 0x2c,
 };
 
-/*! \brief Abis OML Channel (Section 9.4.1) */
+/*! Abis OML Channel (Section 9.4.1) */
 struct abis_nm_channel {
 	uint8_t	attrib;
-	uint8_t	bts_port;	/*!< \brief BTS port number */
-	uint8_t	timeslot;	/*!< \brief E1 timeslot */
-	uint8_t	subslot;	/*!< \brief E1 sub-slot */
+	uint8_t	bts_port;	/*!< BTS port number */
+	uint8_t	timeslot;	/*!< E1 timeslot */
+	uint8_t	subslot;	/*!< E1 sub-slot */
 } __attribute__ ((packed));
 
-/*! \brief Siemens BS-11 specific objects in the SienemsHW (0xA5) object class */
+/*! 3GPP TS 12.21 9.4.53 T200 index */
+enum abis_nm_t200_idx {
+	T200_SDCCH		= 0,
+	T200_FACCH_F		= 1,
+	T200_FACCH_H		= 2,
+	T200_SACCH_TCH_SAPI0	= 3,
+	T200_SACCH_SDCCH	= 4,
+	T200_SDCCH_SAPI3	= 5,
+	T200_SACCH_TCH_SAPI3	= 6
+};
+
+extern const uint8_t abis_nm_t200_ms[];
+
+/*! Siemens BS-11 specific objects in the SienemsHW (0xA5) object class */
 enum abis_bs11_objtype {
 	BS11_OBJ_ALCO		= 0x01,
 	BS11_OBJ_BBSIG		= 0x02,	/* obj_class: 0,1 */
@@ -624,7 +668,7 @@ enum abis_bs11_objtype {
 	BS11_OBJ_PA		= 0x09,	/* obj_class: 0, 1*/
 };
 
-/*! \brief Siemens BS11 TRX power */
+/*! Siemens BS11 TRX power */
 enum abis_bs11_trx_power {
 	BS11_TRX_POWER_GSM_2W	= 0x06,
 	BS11_TRX_POWER_GSM_250mW= 0x07,
@@ -636,20 +680,20 @@ enum abis_bs11_trx_power {
 	BS11_TRX_POWER_DCS_160mW= 0x0d,
 };
 
-/*! \brief Siemens BS11 PLL mode */
+/*! Siemens BS11 PLL mode */
 enum abis_bs11_li_pll_mode {
 	BS11_LI_PLL_LOCKED	= 2,
 	BS11_LI_PLL_STANDALONE	= 3,
 };
 
-/*! \brief Siemens BS11 E1 line configuration */
+/*! Siemens BS11 E1 line configuration */
 enum abis_bs11_line_cfg {
 	BS11_LINE_CFG_STAR	= 0x00,
 	BS11_LINE_CFG_MULTIDROP	= 0x01,
 	BS11_LINE_CFG_LOOP	= 0x02,
 };
 
-/*! \brief Siemens BS11 boot phase */
+/*! Siemens BS11 boot phase */
 enum abis_bs11_phase {
 	BS11_STATE_SOFTWARE_RQD		= 0x01,
 	BS11_STATE_LOAD_SMU_INTENDED	= 0x11,
@@ -666,7 +710,7 @@ enum abis_bs11_phase {
 	BS11_STATE_ABIS_LOAD		= 0x13,
 };
 
-/*! \brief ip.access test number */
+/*! ip.access test number */
 enum abis_nm_ipacc_test_no {
 	NM_IPACC_TESTNO_RLOOP_ANT	= 0x01,
 	NM_IPACC_TESTNO_RLOOP_XCVR	= 0x02,
@@ -680,7 +724,7 @@ enum abis_nm_ipacc_test_no {
 	NM_IPACC_TESTNO_BCCCH_MONITOR	= 0x46,
 };
 
-/*! \brief first byte after length inside NM_ATT_TEST_REPORT */
+/*! first byte after length inside NM_ATT_TEST_REPORT */
 enum abis_nm_ipacc_test_res {
 	NM_IPACC_TESTRES_SUCCESS	= 0,
 	NM_IPACC_TESTRES_TIMEOUT	= 1,
@@ -689,7 +733,7 @@ enum abis_nm_ipacc_test_res {
 	NM_IPACC_TESTRES_STOPPED	= 4,
 };
 
-/*! \brief internal IE inside NM_ATT_TEST_REPORT */
+/*! internal IE inside NM_ATT_TEST_REPORT */
 enum abis_nm_ipacc_testres_ie {
 	NM_IPACC_TR_IE_FREQ_ERR_LIST	= 3,
 	NM_IPACC_TR_IE_CHAN_USAGE	= 4,
@@ -698,7 +742,7 @@ enum abis_nm_ipacc_testres_ie {
 	NM_IPACC_TR_IE_FREQ_ERR		= 18,
 };
 
-/*! \brief ip.access IEI */
+/*! ip.access IEI */
 enum ipac_eie {
 	NM_IPAC_EIE_ARFCN_WHITE		= 0x01,
 	NM_IPAC_EIE_ARFCH_BLACK		= 0x02,
@@ -731,7 +775,99 @@ enum ipac_eie {
 	NM_IPAC_EIE_BTS_ID		= 0x25,
 };
 
-/*! \brief ip.access NWL BCCH information type */
+/*! ip.access support flags for NM_IPAC_EIE_FREQ_BANDS */
+#define NM_IPAC_F_FREQ_BAND_PGSM		(1 << 0)
+#define NM_IPAC_F_FREQ_BAND_EGSM		(1 << 1)
+#define NM_IPAC_F_FREQ_BAND_RGSM		(1 << 2)
+#define NM_IPAC_F_FREQ_BAND_DCS			(1 << 3)
+#define NM_IPAC_F_FREQ_BAND_PCS			(1 << 4)
+#define NM_IPAC_F_FREQ_BAND_850			(1 << 5)
+#define NM_IPAC_F_FREQ_BAND_480			(1 << 6)
+#define NM_IPAC_F_FREQ_BAND_450			(1 << 7)
+
+/*! ip.access support flags for NM_IPAC_EIE_CIPH_ALGOS */
+#define NM_IPAC_F_CIPH_ALGO_A51			(1 << 0)
+#define NM_IPAC_F_CIPH_ALGO_A52			(1 << 1)
+#define NM_IPAC_F_CIPH_ALGO_A53			(1 << 2)
+#define NM_IPAC_F_CIPH_ALGO_A54			(1 << 3)
+#define NM_IPAC_F_CIPH_ALGO_A55			(1 << 4)
+#define NM_IPAC_F_CIPH_ALGO_A56			(1 << 5)
+#define NM_IPAC_F_CIPH_ALGO_A57			(1 << 6)
+#define NM_IPAC_F_CIPH_ALGO_A58			(1 << 7)
+
+/*! ip.access support flags for NM_IPAC_EIE_CHAN_TYPES (1st octet) */
+#define NM_IPAC_F_CHANT_TCHF			(1 << 0)
+#define NM_IPAC_F_CHANT_TCHH			(1 << 1)
+#define NM_IPAC_F_CHANT_SDCCH8			(1 << 2)
+#define NM_IPAC_F_CHANT_BCCH			(1 << 3)
+#define NM_IPAC_F_CHANT_BCCH_SDCCH4		(1 << 4)
+#define NM_IPAC_F_CHANT_BCH			(1 << 5)
+#define NM_IPAC_F_CHANT_BCCH_SDCCH4_CBCH	(1 << 6)
+#define NM_IPAC_F_CHANT_SDCCH8_CBCH		(1 << 7)
+/*! ip.access support flags for NM_IPAC_EIE_CHAN_TYPES (2nd octet) */
+#define NM_IPAC_F_CHANT_PDCHF			(1 << 8)
+#define NM_IPAC_F_CHANT_TCHF_PDCHF		(1 << 9)
+#define NM_IPAC_F_CHANT_TCHH_PDCHH		(1 << 10)
+#define NM_IPAC_F_CHANT_TCHF_TCHH		(1 << 11)
+
+/*! ip.access support flags for NM_IPAC_EIE_CHAN_MODES (speech codecs) */
+#define NM_IPAC_F_CHANM_SPEECH_FS		(1 << 0)
+#define NM_IPAC_F_CHANM_SPEECH_EFS		(1 << 1)
+#define NM_IPAC_F_CHANM_SPEECH_AFS		(1 << 2)
+#define NM_IPAC_F_CHANM_SPEECH_HS		(1 << 3)
+#define NM_IPAC_F_CHANM_SPEECH_AHS		(1 << 4)
+/*! ip.access support flags for NM_IPAC_EIE_CHAN_MODES (CSD non-transparent) */
+#define NM_IPAC_F_CHANM_CSD_NT_4k8		(1 << 8)
+#define NM_IPAC_F_CHANM_CSD_NT_9k6		(1 << 9)
+#define NM_IPAC_F_CHANM_CSD_NT_14k4		(1 << 10)
+/*! ip.access support flags for NM_IPAC_EIE_CHAN_MODES (CSD transparent) */
+#define NM_IPAC_F_CHANM_CSD_T_1200_75		(1 << 16)
+#define NM_IPAC_F_CHANM_CSD_T_600		(1 << 17)
+#define NM_IPAC_F_CHANM_CSD_T_1k2		(1 << 18)
+#define NM_IPAC_F_CHANM_CSD_T_2k4		(1 << 19)
+#define NM_IPAC_F_CHANM_CSD_T_4k8		(1 << 20)
+#define NM_IPAC_F_CHANM_CSD_T_9k6		(1 << 21)
+#define NM_IPAC_F_CHANM_CSD_T_14k4		(1 << 22)
+
+/*! ip.access support flags for NM_IPAC_EIE_GPRS_CODING (GPRS) */
+#define NM_IPAC_F_GPRS_CODING_CS1		(1 << 0)
+#define NM_IPAC_F_GPRS_CODING_CS2		(1 << 1)
+#define NM_IPAC_F_GPRS_CODING_CS3		(1 << 2)
+#define NM_IPAC_F_GPRS_CODING_CS4		(1 << 3)
+/*! ip.access support flags for NM_IPAC_EIE_GPRS_CODING (EGPRS) */
+#define NM_IPAC_F_GPRS_CODING_MCS1		(1 << 8)
+#define NM_IPAC_F_GPRS_CODING_MCS2		(1 << 9)
+#define NM_IPAC_F_GPRS_CODING_MCS3		(1 << 10)
+#define NM_IPAC_F_GPRS_CODING_MCS4		(1 << 11)
+#define NM_IPAC_F_GPRS_CODING_MCS5		(1 << 12)
+#define NM_IPAC_F_GPRS_CODING_MCS6		(1 << 13)
+#define NM_IPAC_F_GPRS_CODING_MCS7		(1 << 14)
+#define NM_IPAC_F_GPRS_CODING_MCS8		(1 << 15)
+#define NM_IPAC_F_GPRS_CODING_MCS9		(1 << 7)
+
+/*! ip.access support flags for NM_IPAC_EIE_RTP_FEATURES */
+#define NM_IPAC_F_RTP_FEAT_COMPR_CONTROL	(1 << 0) /* RTP Compression Control */
+#define NM_IPAC_F_RTP_FEAT_IR_8k		(1 << 1) /* IR  8 kbit/s */
+#define NM_IPAC_F_RTP_FEAT_IR_16k		(1 << 2) /* IR 16 kbit/s */
+#define NM_IPAC_F_RTP_FEAT_IR_32k		(1 << 3) /* IR 32 kbit/s */
+#define NM_IPAC_F_RTP_FEAT_IR_64k		(1 << 4) /* IR 64 kbit/s */
+#define NM_IPAC_F_RTP_FEAT_MULTIPLEX_RTP	(1 << 6) /* RTP Multiplexing */
+#define NM_IPAC_F_RTP_FEAT_MULTIPLEX_SRTP	(1 << 7) /* SRTP Multiplexing */
+
+/*! ip.access support flags for NM_IPAC_EIE_RSL_FEATURES */
+#define NM_IPAC_F_RSL_FEAT_PHYSICAL_CONTEXT	(1 << 0)
+#define NM_IPAC_F_RSL_FEAT_DYN_PDCH_ACT		(1 << 1)
+#define NM_IPAC_F_RSL_FEAT_RTP_PT2		(1 << 2)
+
+extern const struct value_string abis_nm_ipacc_freq_band_desc[];
+extern const struct value_string abis_nm_ipacc_ciph_algo_desc[];
+extern const struct value_string abis_nm_ipacc_chant_desc[];
+extern const struct value_string abis_nm_ipacc_chanm_desc[];
+extern const struct value_string abis_nm_ipacc_gprs_coding_desc[];
+extern const struct value_string abis_nm_ipacc_rtp_feat_desc[];
+extern const struct value_string abis_nm_ipacc_rsl_feat_desc[];
+
+/*! ip.access NWL BCCH information type */
 enum ipac_bcch_info_type {
 	IPAC_BINF_RXLEV			= (1 << 8),
 	IPAC_BINF_RXQUAL		= (1 << 9),
@@ -746,4 +882,91 @@ enum ipac_bcch_info_type {
 	IPAC_BINF_CELL_ALLOC		= (1 << 2),
 };
 
+/*! ip.access NM_ATT_IPACC_NS_CFG value */
+struct abis_nm_ipacc_att_ns_cfg {
+	uint8_t un_blocking_timer;	/* (un)blocking Timer (Tns-block) timeout */
+	uint8_t un_blocking_retries;	/* (un)blocking Timer (Tns-block) number of retries */
+	uint8_t reset_timer;		/* Reset Timer (Tns-reset) timeout */
+	uint8_t reset_retries;		/* Reset Timer (Tns-reset) number of retries */
+	uint8_t test_timer;		/* Test Timer (Tns-test) timeout */
+	uint8_t alive_timer;		/* Alive Timer (Tns-alive) timeout */
+	uint8_t alive_retries;		/* Alive Timer (Tns-alive) number of retries */
+} __attribute__((packed));
+
+/*! ip.access NM_ATT_IPACC_BSSGP_CFG value */
+struct abis_nm_ipacc_att_bssgp_cfg {
+	uint8_t t1_s;			/* blocking timer (T1) */
+	uint8_t t1_blocking_retries;	/* blocking retries */
+	uint8_t t1_unblocking_retries;	/* unblocking retries */
+	uint8_t t2_s;			/* reset timer (T2) */
+	uint8_t t2_retries;		/* reset retries */
+	uint8_t t3_100ms;		/* suspend timer (T3) in 100ms */
+	uint8_t t3_retries;		/* suspend retries */
+	uint8_t t4_100ms;		/* resume timer (T4) in 100ms */
+	uint8_t t4_retries;		/* resume retries */
+	uint8_t t5_s;			/* capability update timer (T5) */
+	uint8_t t5_retries;		/* capability update retries */
+} __attribute__((packed));
+
+/*! ip.access NM_ATT_IPACC_RLC_CFG value */
+struct abis_nm_ipacc_att_rlc_cfg {
+	uint8_t t3142;
+	uint8_t t3169;
+	uint8_t t3191;
+	uint8_t t3193_10ms;
+	uint8_t t3195;
+	uint8_t n3101;
+	uint8_t n3103;
+	uint8_t n3105;
+	uint8_t rlc_cv_countdown;
+} __attribute__((packed));
+
+/*! ip.access NM_ATT_IPACC_RLC_CFG_2 value */
+struct abis_nm_ipacc_att_rlc_cfg_2 {
+	/* T downlink TBF extension (0..500, network order) */
+	uint16_t t_dl_tbf_ext_10ms;
+	/* T uplink TBF extension (0..500, network order) */
+	uint16_t t_ul_tbf_ext_10ms;
+	/* Initial CS to use: CS1 -> 1, CS2 -> 2, CS3 -> 3, CS4 -> 4 */
+	uint8_t initial_cs;
+} __attribute__((packed));
+
+/*! ip.access NM_ATT_IPACC_RLC_CFG_3 value */
+struct abis_nm_ipacc_att_rlc_cfg_3 {
+	/* Initial MCS to use when EGPRS is used:
+	 * MCS1 -> 1, MCS2 -> 2, ..., MCS9 -> 9 */
+	uint8_t initial_mcs;
+} __attribute__((packed));
+
+/*! Osmocom NSVC address type for NM_ATT_OSMO_NS_LINK_CFG */
+enum osmo_oml_nsvc_address_type {
+	OSMO_NSVC_ADDR_UNSPEC		= 0x00,
+	OSMO_NSVC_ADDR_IPV4		= 0x04,
+	OSMO_NSVC_ADDR_IPV6		= 0x29,
+};
+
+/*! 3GPP TS 52.021 §9.4.62 SW Description */
+struct abis_nm_sw_desc {
+	uint8_t file_id[UINT8_MAX];
+	uint8_t file_id_len;
+
+	uint8_t file_version[UINT8_MAX];
+	uint8_t file_version_len;
+};
+
+uint16_t abis_nm_sw_desc_len(const struct abis_nm_sw_desc *sw, bool put_sw_descr);
+uint16_t abis_nm_put_sw_desc(struct msgb *msg, const struct abis_nm_sw_desc *sw, bool put_sw_descr);
+uint16_t abis_nm_put_sw_file(struct msgb *msg, const char *id, const char *ver, bool put_sw_desc);
+uint32_t abis_nm_get_sw_desc_len(const uint8_t * buf, size_t len);
+int abis_nm_get_sw_conf(const uint8_t * buf, size_t buf_len, struct abis_nm_sw_desc *sw, uint16_t sw_len);
+
+struct msgb *abis_nm_fail_evt_rep(enum abis_nm_event_type t,
+				  enum abis_nm_severity s,
+				  enum abis_nm_pcause_type ct,
+				  uint16_t cause_value, const char *fmt, ...);
+struct msgb *abis_nm_fail_evt_vrep(enum abis_nm_event_type t,
+				   enum abis_nm_severity s,
+				   enum abis_nm_pcause_type ct,
+				   uint16_t cause_value, const char *fmt,
+				   va_list ap);
 /*! @} */
